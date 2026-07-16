@@ -34,13 +34,20 @@ chmod +x termux/start-codex-server.sh
 ./termux/start-codex-server.sh
 ```
 
-为兼容未实现 Codex 搜索接口的第三方 OpenAI-compatible Provider，启动脚本默认设置 `web_search = "disabled"`，避免 `/v1/alpha/search` 返回 404。如果当前 Provider 支持网页搜索，可显式启用：
+启动脚本不会覆盖 Codex 的网页搜索设置。使用只兼容 Responses API、但没有 `/alpha/search` 路由的第三方 Provider 时，应让 Codex 使用 Responses API 的托管网页搜索工具：
 
-```sh
-CODEX_APP_SERVER_WEB_SEARCH=live ./termux/start-codex-server.sh
+```toml
+model_provider = "proxy"
+web_search = "live"
+
+[model_providers.proxy]
+name = "Responses Proxy"
+base_url = "https://your-provider.example/v1"
+wire_api = "responses"
+requires_openai_auth = true
 ```
 
-可选模式为 `disabled`、`cached`、`indexed` 和 `live`。手动启动 App Server 时，可添加 `-c 'web_search="disabled"'` 获得相同效果。
+Provider 的 `name` 不要设置成 `OpenAI`；当前 Codex 会把该名称视为 OpenAI Provider 并启用独立的 `/alpha/search` 客户端。代理服务还必须在 Responses API 中支持 `type = "web_search"`。
 
 把脚本输出的“App Server 传输 Token”填入客户端设置。这个 Token 只用于 Android 客户端到 App Server 的传输鉴权，不是 Codex 登录凭证、OpenAI API Key 或 Codex Access Token。
 
