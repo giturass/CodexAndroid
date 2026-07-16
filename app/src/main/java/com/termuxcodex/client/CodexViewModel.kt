@@ -947,7 +947,7 @@ class CodexViewModel(application: Application) : AndroidViewModel(application),
                 detail = request.params.string("reason") ?: "Codex 请求应用文件修改。",
                 rawParams = request.params,
                 threadId = request.params.string("threadId"),
-                decisions = legacyApprovalDecisions(),
+                decisions = defaultApprovalDecisions(),
             )
 
             "item/permissions/requestApproval" -> PendingAction(
@@ -1016,7 +1016,7 @@ class CodexViewModel(application: Application) : AndroidViewModel(application),
                 detail = request.params.string("command") ?: prettyGson.toJson(request.params),
                 rawParams = request.params,
                 threadId = request.params.string("conversationId"),
-                decisions = defaultApprovalDecisions(),
+                decisions = legacyApprovalDecisions(),
             )
 
             else -> {

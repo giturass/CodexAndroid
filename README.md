@@ -34,6 +34,14 @@ chmod +x termux/start-codex-server.sh
 ./termux/start-codex-server.sh
 ```
 
+为兼容未实现 Codex 搜索接口的第三方 OpenAI-compatible Provider，启动脚本默认设置 `web_search = "disabled"`，避免 `/v1/alpha/search` 返回 404。如果当前 Provider 支持网页搜索，可显式启用：
+
+```sh
+CODEX_APP_SERVER_WEB_SEARCH=live ./termux/start-codex-server.sh
+```
+
+可选模式为 `disabled`、`cached`、`indexed` 和 `live`。手动启动 App Server 时，可添加 `-c 'web_search="disabled"'` 获得相同效果。
+
 把脚本输出的“App Server 传输 Token”填入客户端设置。这个 Token 只用于 Android 客户端到 App Server 的传输鉴权，不是 Codex 登录凭证、OpenAI API Key 或 Codex Access Token。
 
 客户端默认连接 `ws://127.0.0.1:4500`，默认工作目录为 `/data/data/com.termux/files/home`。工作目录必须是 Termux 中真实存在的绝对路径，可在应用的“连接与工作区”中改为具体项目目录。
