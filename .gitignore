@@ -5,3 +5,5 @@
 *.iml
 captures/
 .DS_Store
+*.jks
+*.keystore

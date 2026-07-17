@@ -78,3 +78,16 @@ app/build/outputs/apk/debug/app-debug.apk
 升级 Codex CLI 后，可在项目目录执行 `./termux/verify-codex-protocol.sh`，检查当前 CLI schema 是否出现尚未适配的服务端请求。
 
 Android 构建使用 `compileSdk/targetSdk 36`、Android Gradle Plugin 8.13.2、Gradle 8.14.5 与 Kotlin 2.3.0。连接状态会显示 App Server 返回的实际 CLI User-Agent，不再依赖固定版本号判断兼容性。
+
+## GitHub Actions 签名发布
+
+推送到 `main` 分支后，GitHub Actions 会运行测试、构建签名 Release APK，并更新标签和 Release `latest`。也可以在 Actions 页面手动运行该工作流。Release 中的 APK 文件名固定为 `CodexAndroid-latest.apk`。
+
+请先在仓库的 **Settings → Secrets and variables → Actions** 中配置以下 Repository secrets：
+
+- `ANDROID_KEYSTORE_BASE64`：签名 KeyStore 文件的 Base64 内容。可使用 `base64 -w 0 release.jks` 生成；Termux 可使用 `base64 release.jks | tr -d '\n'`。
+- `ANDROID_KEYSTORE_PASSWORD`：KeyStore 密码。
+- `ANDROID_KEY_ALIAS`：签名密钥别名。
+- `ANDROID_KEY_PASSWORD`：签名密钥密码。
+
+签名密钥及密码不会写入仓库。请妥善备份 KeyStore；丢失后将无法用同一签名升级已经发布的 APK。
