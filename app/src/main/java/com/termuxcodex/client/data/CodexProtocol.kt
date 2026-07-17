@@ -1,8 +1,8 @@
 package com.termuxcodex.client.data
 
 /**
- * App Server method names are kept in one catalog so a generated schema update has one review point.
- * Optional fields and decision payloads are still read from each runtime request whenever available.
+ * Officially documented Codex App Server method names are kept in one reviewable catalog.
+ * Optional fields and decision payloads are read from each runtime request whenever available.
  */
 object CodexProtocol {
     object ClientRequest {

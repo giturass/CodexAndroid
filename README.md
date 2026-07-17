@@ -27,15 +27,13 @@ codex --version
 codex login
 ```
 
-推荐使用项目附带的安全启动脚本。脚本会生成权限为 `600` 的随机 capability token、启用 WebSocket 鉴权，并在退出时释放 Wake Lock：
+按照 OpenAI 官方 Codex CLI 文档，直接启动本地监听：
 
 ```sh
-cd CodexAndroid
-chmod +x termux/start-codex-server.sh
-./termux/start-codex-server.sh
+codex app-server --listen ws://127.0.0.1:4500
 ```
 
-启动脚本不会覆盖 Codex 的网页搜索设置。使用只兼容 Responses API、但没有 `/alpha/search` 路由的第三方 Provider 时，应让 Codex 使用 Responses API 的托管网页搜索工具：
+需要保持设备唤醒时，可在启动前单独运行 `termux-wake-lock`。使用只兼容 Responses API、但没有 `/alpha/search` 路由的第三方 Provider 时，应让 Codex 使用 Responses API 的托管网页搜索工具：
 
 ```toml
 model_provider = "proxy"
@@ -50,7 +48,7 @@ requires_openai_auth = true
 
 Provider 的 `name` 不要设置成 `OpenAI`；当前 Codex 会把该名称视为 OpenAI Provider 并启用独立的 `/alpha/search` 客户端。代理服务还必须在 Responses API 中支持 `type = "web_search"`。
 
-把脚本输出的“App Server 传输 Token”填入客户端设置。这个 Token 只用于 Android 客户端到 App Server 的传输鉴权，不是 Codex 登录凭证、OpenAI API Key 或 Codex Access Token。
+如需 WebSocket 鉴权，请使用 Codex CLI 官方的 `--ws-auth capability-token --ws-token-file /absolute/path` 参数，并把同一 Token 填入客户端设置。这个 Token 只用于 Android 客户端到 Codex CLI 的传输鉴权，不是 Codex 登录凭证、OpenAI API Key 或 Codex Access Token。
 
 客户端默认连接 `ws://127.0.0.1:4500`，默认工作目录为 `/data/data/com.termux/files/home`。工作目录必须是 Termux 中真实存在的绝对路径，可在应用的“连接与工作区”中改为具体项目目录。
 
@@ -73,9 +71,7 @@ app/build/outputs/apk/debug/app-debug.apk
 
 默认配置只允许 `ws://` 连接回环地址；非本机地址会被客户端强制要求使用 `wss://`。即使在 Android 本机也建议始终启用 capability token，因为其他安装了网络权限的应用也可能访问设备回环端口。Token 使用 Android Keystore 加密保存且不会进入系统备份。
 
-当前 Codex App Server WebSocket 传输仍是实验性接口，CLI 升级后协议可能变化。协议方法集中维护在 `CodexProtocol.kt`，审批决策优先读取服务端运行时提供的 `availableDecisions`。
-
-升级 Codex CLI 后，可在项目目录执行 `./termux/verify-codex-protocol.sh`，检查当前 CLI schema 是否出现尚未适配的服务端请求。
+当前 Codex App Server WebSocket 传输仍是实验性接口，CLI 升级后协议可能变化。项目只使用 OpenAI 官方文档公开的稳定字段；协议方法集中维护在 `CodexProtocol.kt`，审批决策优先读取服务端运行时提供的 `availableDecisions`。
 
 Android 构建使用 `compileSdk/targetSdk 36`、Android Gradle Plugin 8.13.2、Gradle 8.14.5 与 Kotlin 2.3.0。连接状态会显示 App Server 返回的实际 CLI User-Agent，不再依赖固定版本号判断兼容性。
 

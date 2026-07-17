@@ -584,7 +584,7 @@ private fun ConnectionPanel(
     val clipboard = LocalClipboard.current
     val scope = rememberCoroutineScope()
     val context = LocalContext.current
-    val serverCommand = "./start-codex-server.sh"
+    val serverCommand = "codex app-server --listen ws://127.0.0.1:4500"
     ElevatedCard(
         modifier = Modifier
             .padding(24.dp)
@@ -603,7 +603,7 @@ private fun ConnectionPanel(
                 )
                 Spacer(Modifier.width(12.dp))
                 Column {
-                    Text("连接 Codex Android", style = MaterialTheme.typography.titleLarge)
+                    Text("连接 Codex CLI", style = MaterialTheme.typography.titleLarge)
                     Text(
                         state.connectionMessage,
                         style = MaterialTheme.typography.bodySmall,
@@ -634,7 +634,7 @@ private fun ConnectionPanel(
                     IconButton(onClick = {
                         scope.launch {
                             clipboard.setClipEntry(
-                                ClipEntry(ClipData.newPlainText("Codex App Server 命令", serverCommand))
+                                ClipEntry(ClipData.newPlainText("Codex CLI 命令", serverCommand))
                             )
                         }
                     }) {
@@ -644,7 +644,7 @@ private fun ConnectionPanel(
             }
             Spacer(Modifier.height(16.dp))
             Text(
-                "客户端地址：${state.endpoint}",
+                "连接地址：${state.endpoint}",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )

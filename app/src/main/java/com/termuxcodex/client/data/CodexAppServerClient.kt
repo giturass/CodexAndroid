@@ -84,9 +84,7 @@ class CodexAppServerClient(private val listener: Listener) {
                         addProperty("version", BuildConfig.VERSION_NAME)
                     })
                     add("capabilities", JsonObject().apply {
-                        addProperty("experimentalApi", false)
                         addProperty("mcpServerOpenaiFormElicitation", true)
-                        addProperty("requestAttestation", false)
                     })
                 }
                 requestInternal(

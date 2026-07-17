@@ -438,12 +438,6 @@ class CodexViewModel(application: Application) : AndroidViewModel(application),
         uiState = uiState.copy(currentThreadTitle = "正在加载…")
         client.request(CodexProtocol.ClientRequest.THREAD_RESUME, JsonObject().apply {
             addProperty("threadId", threadId)
-            addProperty("excludeTurns", true)
-            add("initialTurnsPage", JsonObject().apply {
-                addProperty("limit", HISTORY_PAGE_SIZE)
-                addProperty("sortDirection", "desc")
-                addProperty("itemsView", "full")
-            })
         }) { response ->
             response.error?.let {
                 if (generation != resumeGeneration) return@request
@@ -462,21 +456,49 @@ class CodexViewModel(application: Application) : AndroidViewModel(application),
                 addInfo("恢复会话失败：App Server 返回了无效的会话数据。", error = true)
                 return@request
             }
-            val turnsPage = result.getAsJsonObject("initialTurnsPage")
-            val turns = turnsPage?.getAsJsonArray("data")
-                ?: thread.getAsJsonArray("turns")
-                ?: JsonArray()
             val title = thread.string("name")
                 ?: thread.string("preview")
                 ?: "Codex 会话"
-            val activeTurnId = turns
-                .map { it.asJsonObject }
-                .firstOrNull { it.string("status") == "inProgress" }
-                ?.string("id")
             val threadActive = thread.getAsJsonObject("status")?.string("type") == "active"
             val previousThreadId = subscribedThreadId
             val resolvedThreadId = thread.string("id") ?: threadId
-            val nextCursor = turnsPage?.string("nextCursor")
+            loadInitialThreadHistory(
+                generation = generation,
+                resolvedThreadId = resolvedThreadId,
+                title = title,
+                threadActive = threadActive,
+                previousThreadId = previousThreadId,
+                fallbackTurns = thread.getAsJsonArray("turns") ?: JsonArray(),
+            )
+        }
+    }
+
+    private fun loadInitialThreadHistory(
+        generation: Int,
+        resolvedThreadId: String,
+        title: String,
+        threadActive: Boolean,
+        previousThreadId: String?,
+        fallbackTurns: JsonArray,
+    ) {
+        client.request(CodexProtocol.ClientRequest.THREAD_TURNS_LIST, JsonObject().apply {
+            addProperty("threadId", resolvedThreadId)
+            addProperty("limit", HISTORY_PAGE_SIZE)
+            addProperty("sortDirection", "desc")
+            addProperty("itemsView", "full")
+        }, retryOnOverload = true) { response ->
+            if (generation != resumeGeneration) return@request
+            val turns = if (response.error == null) {
+                response.result?.getAsJsonArray("data") ?: fallbackTurns
+            } else {
+                addInfo("读取会话历史失败：${rpcError(response.error)}", error = true)
+                fallbackTurns
+            }
+            val nextCursor = response.result?.string("nextCursor")
+            val activeTurnId = turns
+                .mapNotNull { it.takeIf(JsonElement::isJsonObject)?.asJsonObject }
+                .firstOrNull { it.string("status") == "inProgress" }
+                ?.string("id")
             viewModelScope.launch {
                 val parsedMessages = withContext(Dispatchers.Default) {
                     parseTurnsMessages(turns.deepCopy(), newestFirst = true)
