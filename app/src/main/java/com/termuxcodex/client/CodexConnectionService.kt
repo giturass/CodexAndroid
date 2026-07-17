@@ -31,11 +31,21 @@ class CodexConnectionService : Service() {
             return START_NOT_STICKY
         }
         val busy = intent?.getBooleanExtra(EXTRA_BUSY, false) == true
-        startForeground(NOTIFICATION_ID, notification(busy))
+        try {
+            startForeground(NOTIFICATION_ID, notification(busy))
+        } catch (_: RuntimeException) {
+            stopSelf(startId)
+            return START_NOT_STICKY
+        }
         return START_NOT_STICKY
     }
 
     override fun onBind(intent: Intent?): IBinder? = null
+
+    override fun onTimeout(startId: Int, fgsType: Int) {
+        stopForeground(STOP_FOREGROUND_REMOVE)
+        stopSelf(startId)
+    }
 
     private fun notification(busy: Boolean): Notification {
         val openApp = PendingIntent.getActivity(
@@ -64,14 +74,19 @@ class CodexConnectionService : Service() {
         private const val ACTION_STOP = "com.termuxcodex.client.STOP_CONNECTION"
         private const val EXTRA_BUSY = "busy"
 
-        fun start(context: Context, busy: Boolean) {
-            ContextCompat.startForegroundService(
-                context,
-                Intent(context, CodexConnectionService::class.java).apply {
-                    action = ACTION_START
-                    putExtra(EXTRA_BUSY, busy)
-                },
-            )
+        fun start(context: Context, busy: Boolean): Boolean {
+            return try {
+                ContextCompat.startForegroundService(
+                    context,
+                    Intent(context, CodexConnectionService::class.java).apply {
+                        action = ACTION_START
+                        putExtra(EXTRA_BUSY, busy)
+                    },
+                )
+                true
+            } catch (_: RuntimeException) {
+                false
+            }
         }
 
         fun stop(context: Context) {

@@ -31,17 +31,22 @@ class SecretStore(context: Context) {
         }
     }
 
-    fun setTransportToken(token: String) {
+    fun setTransportToken(token: String): Boolean {
         if (token.isBlank()) {
             preferences.edit { remove(KEY_TOKEN) }
-            return
+            return true
         }
-        val cipher = Cipher.getInstance(TRANSFORMATION)
-        cipher.init(Cipher.ENCRYPT_MODE, getOrCreateKey())
-        val encrypted = cipher.doFinal(token.toByteArray(Charsets.UTF_8))
-        val payload = cipher.iv + encrypted
-        preferences.edit {
-            putString(KEY_TOKEN, Base64.encodeToString(payload, Base64.NO_WRAP))
+        return try {
+            val cipher = Cipher.getInstance(TRANSFORMATION)
+            cipher.init(Cipher.ENCRYPT_MODE, getOrCreateKey())
+            val encrypted = cipher.doFinal(token.toByteArray(Charsets.UTF_8))
+            val payload = cipher.iv + encrypted
+            preferences.edit {
+                putString(KEY_TOKEN, Base64.encodeToString(payload, Base64.NO_WRAP))
+            }
+            true
+        } catch (_: Throwable) {
+            false
         }
     }
 

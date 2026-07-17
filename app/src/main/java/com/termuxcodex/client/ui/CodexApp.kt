@@ -100,8 +100,10 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -130,7 +132,10 @@ import com.termuxcodex.client.PendingKind
 import com.termuxcodex.client.RemoteDirectory
 import com.termuxcodex.client.ThreadSummary
 import com.termuxcodex.client.UiMessage
+import com.termuxcodex.client.inputValidationError
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -210,7 +215,7 @@ fun CodexApp(viewModel: CodexViewModel) {
                         .fillMaxSize()
                         .padding(padding),
                     onConnect = viewModel::connect,
-                    onSuggestion = viewModel::sendPrompt,
+                    onSuggestion = { viewModel.sendPrompt(it) },
                     onLoadOlder = viewModel::loadOlderHistory,
                     scrollToMessageId = scrollToMessageId,
                     onSearchScrollHandled = { scrollToMessageId = null },
@@ -222,7 +227,10 @@ fun CodexApp(viewModel: CodexViewModel) {
     if (showSettings) {
         ConnectionSettingsDialog(
             state = state,
-            onDismiss = { showSettings = false },
+            onDismiss = {
+                showSettings = false
+                if (state.skillsCwd != state.cwd) viewModel.refreshSkills()
+            },
             onSave = { endpoint, token, cwd, model, effort, skills ->
                 viewModel.updateSettings(endpoint, token, cwd, model, effort, skills)
                 showSettings = false
@@ -922,10 +930,10 @@ private const val MAX_COMMAND_OUTPUT_CHARS = 200_000
 private fun PromptBar(
     connected: Boolean,
     busy: Boolean,
-    onSend: (String) -> Unit,
+    onSend: (String) -> Boolean,
     onStop: () -> Unit,
 ) {
-    var prompt by remember { mutableStateOf("") }
+    var prompt by rememberSaveable { mutableStateOf("") }
     Surface(
         tonalElevation = 3.dp,
         shadowElevation = 6.dp,
@@ -973,8 +981,7 @@ private fun PromptBar(
                     keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
                     keyboardActions = KeyboardActions(onSend = {
                         if (prompt.isNotBlank() && connected && !busy) {
-                            onSend(prompt)
-                            prompt = ""
+                            if (onSend(prompt)) prompt = ""
                         }
                     }),
                 )
@@ -984,8 +991,7 @@ private fun PromptBar(
                         if (busy) {
                             onStop()
                         } else if (prompt.isNotBlank()) {
-                            onSend(prompt)
-                            prompt = ""
+                            if (onSend(prompt)) prompt = ""
                         }
                     },
                     enabled = connected && (busy || prompt.isNotBlank()),
@@ -1008,14 +1014,19 @@ private fun SearchDialog(
     onMessageSelected: (String) -> Unit,
     onThreadSelected: (String) -> Unit,
 ) {
-    var query by remember { mutableStateOf("") }
+    var query by rememberSaveable { mutableStateOf("") }
     val normalizedQuery = query.trim()
-    val messageResults = remember(normalizedQuery, state.messages) {
-        if (normalizedQuery.isBlank()) emptyList() else state.messages
-            .asSequence()
-            .filter { it.text.contains(normalizedQuery, ignoreCase = true) }
-            .take(MAX_SEARCH_RESULTS)
-            .toList()
+    val messageResults by produceState(emptyList<UiMessage>(), normalizedQuery, state.messages) {
+        value = if (normalizedQuery.isBlank()) {
+            emptyList()
+        } else {
+            withContext(Dispatchers.Default) {
+                state.messages.asSequence()
+                    .filter { it.text.contains(normalizedQuery, ignoreCase = true) }
+                    .take(MAX_SEARCH_RESULTS)
+                    .toList()
+            }
+        }
     }
     val threadResults = remember(normalizedQuery, state.threads) {
         if (normalizedQuery.isBlank()) emptyList() else state.threads
@@ -1143,14 +1154,14 @@ private fun messageKindLabel(kind: MessageKind): String = when (kind) {
 }
 
 private fun String.searchPreview(query: String): String {
-    val compact = replace(Regex("\\s+"), " ").trim()
-    val index = compact.indexOf(query, ignoreCase = true).coerceAtLeast(0)
-    val start = (index - 45).coerceAtLeast(0)
-    val end = (index + query.length + 100).coerceAtMost(compact.length)
+    val index = indexOf(query, ignoreCase = true).coerceAtLeast(0)
+    val start = (index - 60).coerceAtLeast(0)
+    val end = (index + query.length + 140).coerceAtMost(length)
+    val compact = substring(start, end).replace(Regex("\\s+"), " ").trim()
     return buildString {
         if (start > 0) append("…")
-        append(compact.substring(start, end))
-        if (end < compact.length) append("…")
+        append(compact)
+        if (end < length) append("…")
     }
 }
 
@@ -1177,13 +1188,13 @@ private fun ConnectionSettingsDialog(
     val notificationPermissionLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestPermission()
     ) { granted -> notificationGranted = granted }
-    var endpoint by remember { mutableStateOf(state.endpoint) }
-    var token by remember { mutableStateOf(state.token) }
-    var cwd by remember { mutableStateOf(state.cwd) }
+    var endpoint by rememberSaveable { mutableStateOf(state.endpoint) }
+    var token by rememberSaveable { mutableStateOf(state.token) }
+    var cwd by rememberSaveable { mutableStateOf(state.cwd) }
     var cwdError by remember { mutableStateOf<String?>(null) }
-    var model by remember { mutableStateOf(state.model) }
-    var reasoningEffort by remember { mutableStateOf(state.reasoningEffort) }
-    var selectedSkillPaths by remember { mutableStateOf(state.selectedSkillPaths) }
+    var model by rememberSaveable { mutableStateOf(state.model) }
+    var reasoningEffort by rememberSaveable { mutableStateOf(state.reasoningEffort) }
+    var selectedSkillPaths by rememberSaveable { mutableStateOf(state.selectedSkillPaths) }
     var modelMenuExpanded by remember { mutableStateOf(false) }
     var reasoningMenuExpanded by remember { mutableStateOf(false) }
     var skillsMenuExpanded by remember { mutableStateOf(false) }
@@ -1641,12 +1652,15 @@ private fun RemoteDirectoryPickerDialog(
     var error by remember { mutableStateOf<String?>(null) }
 
     LaunchedEffect(currentPath) {
+        val requestedPath = currentPath
         loading = true
         error = null
-        onReadDirectories(currentPath) { result, failure ->
-            directories = result
-            error = failure
-            loading = false
+        onReadDirectories(requestedPath) { result, failure ->
+            if (currentPath == requestedPath) {
+                directories = result
+                error = failure
+                loading = false
+            }
         }
     }
 
@@ -1767,7 +1781,9 @@ private fun ApprovalDialog(
                                 .padding(14.dp)
                                 .verticalScroll(rememberScrollState()),
                             style = MaterialTheme.typography.bodySmall.copy(
-                                fontFamily = if (pending.kind == PendingKind.COMMAND) {
+                                fontFamily = if (pending.kind == PendingKind.COMMAND ||
+                                    pending.kind == PendingKind.FILE_CHANGE
+                                ) {
                                     FontFamily.Monospace
                                 } else {
                                     FontFamily.Default
@@ -1779,8 +1795,11 @@ private fun ApprovalDialog(
                 pending.rawParams.get("url")?.takeUnless { it.isJsonNull }?.asString?.let { url ->
                     OutlinedButton(
                         onClick = {
-                            runCatching {
-                                context.startActivity(Intent(Intent.ACTION_VIEW, url.toUri()))
+                            val uri = url.toUri()
+                            if (uri.scheme?.lowercase() in setOf("http", "https")) {
+                                runCatching {
+                                    context.startActivity(Intent(Intent.ACTION_VIEW, uri))
+                                }
                             }
                         },
                         modifier = Modifier.fillMaxWidth(),
@@ -1839,6 +1858,8 @@ private fun UserInputDialog(
                     )
                 }
                 pending.questions.forEach { question ->
+                    val answer = answers[question.id].orEmpty()
+                    val validationError = inputValidationError(question, answer)
                     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                         Text(question.header, style = MaterialTheme.typography.labelLarge)
                         Text(question.prompt, style = MaterialTheme.typography.bodyMedium)
@@ -1849,17 +1870,32 @@ private fun UserInputDialog(
                             ) {
                                 question.options.forEach { option ->
                                     FilterChip(
-                                        selected = answers[question.id] == option,
-                                        onClick = { answers[question.id] = option },
-                                        label = { Text(option) },
+                                        selected = answers[question.id] == option.label,
+                                        onClick = { answers[question.id] = option.label },
+                                        label = {
+                                            Column {
+                                                Text(option.label)
+                                                if (option.description.isNotBlank()) {
+                                                    Text(
+                                                        option.description,
+                                                        style = MaterialTheme.typography.bodySmall,
+                                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                                    )
+                                                }
+                                            }
+                                        },
                                     )
                                 }
                             }
                         }
                         OutlinedTextField(
-                            value = answers[question.id].orEmpty(),
+                            value = answer,
                             onValueChange = { answers[question.id] = it },
                             label = { Text("回答") },
+                            isError = validationError != null && answer.isNotEmpty(),
+                            supportingText = validationError?.takeIf { answer.isNotEmpty() }?.let { error ->
+                                { Text(error) }
+                            },
                             visualTransformation = if (question.secret) {
                                 PasswordVisualTransformation()
                             } else {
@@ -1872,9 +1908,9 @@ private fun UserInputDialog(
             }
         },
         confirmButton = {
-            val requiredAnswered = pending.questions
-                .filter { it.required }
-                .all { answers[it.id]?.isNotBlank() == true }
+            val requiredAnswered = pending.questions.all { question ->
+                inputValidationError(question, answers[question.id].orEmpty()) == null
+            }
             Button(
                 onClick = { onSubmit(answers.toMap()) },
                 enabled = requiredAnswered,

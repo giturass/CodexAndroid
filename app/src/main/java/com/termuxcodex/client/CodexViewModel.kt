@@ -1,5 +1,3 @@
-@file:android.annotation.SuppressLint("SdCardPath")
-
 package com.termuxcodex.client
 
 import android.app.Application
@@ -7,7 +5,6 @@ import android.content.Intent
 import android.os.Handler
 import android.os.Looper
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.Immutable
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.lifecycle.AndroidViewModel
@@ -19,6 +16,7 @@ import com.google.gson.JsonElement
 import com.google.gson.JsonObject
 import com.google.gson.JsonPrimitive
 import com.termuxcodex.client.data.CodexAppServerClient
+import com.termuxcodex.client.data.CodexProtocol
 import com.termuxcodex.client.data.ConnectionSecurity
 import com.termuxcodex.client.data.SecretStore
 import java.text.DateFormat
@@ -27,121 +25,6 @@ import java.util.UUID
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-
-enum class ConnectionStatus { DISCONNECTED, CONNECTING, CONNECTED }
-
-const val DEFAULT_TERMUX_HOME = "/data/data/com.termux/files/home"
-
-enum class MessageKind { USER, ASSISTANT, TOOL, INFO, ERROR }
-
-enum class MessageOutcome { NEUTRAL, SUCCESS, FAILED, DECLINED }
-
-@Immutable
-data class UiMessage(
-    val id: String,
-    val kind: MessageKind,
-    val text: String,
-    val title: String? = null,
-    val running: Boolean = false,
-    val outcome: MessageOutcome = MessageOutcome.NEUTRAL,
-)
-
-data class ThreadSummary(
-    val id: String,
-    val title: String,
-    val cwd: String,
-    val updatedAt: Long,
-)
-
-data class CodexModel(
-    val id: String,
-    val model: String,
-    val displayName: String,
-    val description: String,
-    val isDefault: Boolean,
-    val defaultReasoningEffort: String,
-    val supportedReasoningEfforts: List<ReasoningEffortOption>,
-)
-
-data class ReasoningEffortOption(
-    val value: String,
-    val description: String,
-)
-
-data class RemoteDirectory(
-    val name: String,
-    val path: String,
-)
-
-data class CodexSkill(
-    val name: String,
-    val displayName: String,
-    val path: String,
-    val description: String,
-    val scope: String,
-)
-
-enum class PendingKind { COMMAND, FILE_CHANGE, PERMISSION, USER_INPUT, MCP_ELICITATION }
-
-data class InputQuestion(
-    val id: String,
-    val header: String,
-    val prompt: String,
-    val options: List<String>,
-    val secret: Boolean,
-    val valueType: String = "string",
-    val required: Boolean = false,
-)
-
-data class PendingDecision(
-    val key: String,
-    val label: String,
-    val payload: JsonElement,
-)
-
-data class PendingAction(
-    val requestId: JsonElement,
-    val kind: PendingKind,
-    val title: String,
-    val detail: String,
-    val rawParams: JsonObject,
-    val questions: List<InputQuestion> = emptyList(),
-    val threadId: String? = null,
-    val decisions: List<PendingDecision> = emptyList(),
-    val autoResolutionMs: Long? = null,
-)
-
-data class AppUiState(
-    val connectionStatus: ConnectionStatus = ConnectionStatus.DISCONNECTED,
-    val connectionMessage: String = "尚未连接",
-    val endpoint: String = "ws://127.0.0.1:4500",
-    val token: String = "",
-    val cwd: String = DEFAULT_TERMUX_HOME,
-    val model: String = "",
-    val reasoningEffort: String = "",
-    val configModel: String = "",
-    val configReasoningEffort: String = "",
-    val selectedSkillPaths: Set<String> = emptySet(),
-    val availableModels: List<CodexModel> = emptyList(),
-    val modelsLoading: Boolean = false,
-    val modelsError: String? = null,
-    val availableSkills: List<CodexSkill> = emptyList(),
-    val skillsCwd: String = "",
-    val skillsLoading: Boolean = false,
-    val skillsError: String? = null,
-    val messages: List<UiMessage> = emptyList(),
-    val threads: List<ThreadSummary> = emptyList(),
-    val currentThreadId: String? = null,
-    val currentThreadTitle: String = "新会话",
-    val activeTurnId: String? = null,
-    val busy: Boolean = false,
-    val pendingActions: List<PendingAction> = emptyList(),
-    val historyNextCursor: String? = null,
-    val historyLoading: Boolean = false,
-) {
-    val pendingAction: PendingAction?
-        get() = pendingActions.firstOrNull()
-}
 
 class CodexViewModel(application: Application) : AndroidViewModel(application),
     CodexAppServerClient.Listener {
@@ -152,14 +35,20 @@ class CodexViewModel(application: Application) : AndroidViewModel(application),
     private val client = CodexAppServerClient(this)
     private val notifier = ApprovalNotifier(application)
     private val mainHandler = Handler(Looper.getMainLooper())
-    private var pendingPrompt: String? = null
+    private var pendingPrompt: PendingPrompt? = null
     private var appInForeground = true
     private var subscribedThreadId: String? = null
     private var manualDisconnect = false
     private var reconnectAttempt = 0
     private var resumeGeneration = 0
     private var pendingNotificationThreadId: String? = null
+    private var threadListGeneration = 0
+    private var modelListGeneration = 0
+    private var skillsGeneration = 0
+    private var foregroundServiceWarningShown = false
     private val pendingDeltas = linkedMapOf<String, BufferedDelta>()
+    private val fileChangePatches = mutableMapOf<String, String>()
+    private val turnDiffs = mutableMapOf<String, String>()
     private var deltaFlushScheduled = false
 
     private data class BufferedDelta(
@@ -168,6 +57,8 @@ class CodexViewModel(application: Application) : AndroidViewModel(application),
         val text: StringBuilder = StringBuilder(),
         var truncated: Boolean = false,
     )
+
+    private data class PendingPrompt(val text: String, val messageId: String)
 
     var uiState by mutableStateOf(
         AppUiState(
@@ -215,7 +106,9 @@ class CodexViewModel(application: Application) : AndroidViewModel(application),
             putString("reasoning_effort", normalizedReasoningEffort)
             putStringSet("selected_skills", selectedSkillPaths)
         }
-        secretStore.setTransportToken(token.trim())
+        if (!secretStore.setTransportToken(token.trim())) {
+            addInfo("Android Keystore 无法保存 Token；本次连接仍会使用当前输入。", error = true)
+        }
         preferences.edit { remove("token") }
         if (sessionChanged && uiState.currentThreadId != null && !uiState.busy) {
             unsubscribe(uiState.currentThreadId)
@@ -308,6 +201,9 @@ class CodexViewModel(application: Application) : AndroidViewModel(application),
 
     fun newThread() {
         if (uiState.busy) return
+        pendingDeltas.clear()
+        fileChangePatches.clear()
+        turnDiffs.clear()
         unsubscribe(uiState.currentThreadId)
         subscribedThreadId = null
         preferences.edit {
@@ -334,7 +230,7 @@ class CodexViewModel(application: Application) : AndroidViewModel(application),
             addInfo("当前会话正在执行任务，请先停止任务后再删除。", error = true)
             return
         }
-        client.request("thread/delete", JsonObject().apply {
+        client.request(CodexProtocol.ClientRequest.THREAD_DELETE, JsonObject().apply {
             addProperty("threadId", threadId)
         }) { response ->
             response.error?.let {
@@ -373,16 +269,28 @@ class CodexViewModel(application: Application) : AndroidViewModel(application),
 
     fun refreshThreads() {
         if (!client.isReady()) return
-        loadThreadsPage(cursor = null, accumulated = emptyList())
+        val generation = ++threadListGeneration
+        loadThreadsPage(
+            cursor = null,
+            accumulated = emptyList(),
+            generation = generation,
+            visitedCursors = emptySet(),
+        )
     }
 
-    private fun loadThreadsPage(cursor: String?, accumulated: List<ThreadSummary>) {
-        client.request("thread/list", JsonObject().apply {
+    private fun loadThreadsPage(
+        cursor: String?,
+        accumulated: List<ThreadSummary>,
+        generation: Int,
+        visitedCursors: Set<String>,
+    ) {
+        client.request(CodexProtocol.ClientRequest.THREAD_LIST, JsonObject().apply {
             addProperty("limit", 50)
             addProperty("sortKey", "updated_at")
             addProperty("sortDirection", "desc")
             cursor?.let { addProperty("cursor", it) }
-        }) { response ->
+        }, retryOnOverload = true) { response ->
+            if (generation != threadListGeneration) return@request
             response.error?.let {
                 addInfo("读取会话失败：${rpcError(it)}", error = true)
                 return@request
@@ -403,8 +311,15 @@ class CodexViewModel(application: Application) : AndroidViewModel(application),
             }
             val threads = (accumulated + page).distinctBy { it.id }
             val nextCursor = response.result?.string("nextCursor")
-            if (nextCursor != null && threads.size < MAX_THREAD_LIST_SIZE) {
-                loadThreadsPage(nextCursor, threads)
+            if (nextCursor != null && nextCursor !in visitedCursors &&
+                threads.size < MAX_THREAD_LIST_SIZE
+            ) {
+                loadThreadsPage(
+                    nextCursor,
+                    threads,
+                    generation,
+                    visitedCursors + nextCursor,
+                )
             } else {
                 uiState = uiState.copy(threads = threads)
             }
@@ -419,17 +334,22 @@ class CodexViewModel(application: Application) : AndroidViewModel(application),
             )
             return
         }
-        if (uiState.modelsLoading) return
+        val generation = ++modelListGeneration
         uiState = uiState.copy(modelsLoading = true, modelsError = null)
-        loadModelsPage(cursor = null, accumulated = emptyList())
+        loadModelsPage(
+            cursor = null,
+            accumulated = emptyList(),
+            generation = generation,
+            visitedCursors = emptySet(),
+        )
     }
 
     private fun refreshConfigDefaults() {
         if (!client.isReady()) return
-        client.request("config/read", JsonObject().apply {
+        client.request(CodexProtocol.ClientRequest.CONFIG_READ, JsonObject().apply {
             addProperty("cwd", uiState.cwd)
             addProperty("includeLayers", false)
-        }) { response ->
+        }, retryOnOverload = true) { response ->
             if (response.error != null) return@request
             val config = response.result?.getAsJsonObject("config") ?: return@request
             uiState = uiState.copy(
@@ -448,12 +368,14 @@ class CodexViewModel(application: Application) : AndroidViewModel(application),
             )
             return
         }
-        if (normalizedCwd.isBlank() || uiState.skillsLoading) return
+        if (normalizedCwd.isBlank()) return
+        val generation = ++skillsGeneration
         uiState = uiState.copy(skillsLoading = true, skillsError = null)
-        client.request("skills/list", JsonObject().apply {
+        client.request(CodexProtocol.ClientRequest.SKILLS_LIST, JsonObject().apply {
             add("cwds", JsonArray().apply { add(normalizedCwd) })
             addProperty("forceReload", forceReload)
-        }) { response ->
+        }, retryOnOverload = true) { response ->
+            if (generation != skillsGeneration) return@request
             response.error?.let {
                 uiState = uiState.copy(
                     skillsLoading = false,
@@ -486,8 +408,13 @@ class CodexViewModel(application: Application) : AndroidViewModel(application),
                 .orEmpty()
                 .distinctBy { it.path }
             val availablePaths = skills.mapTo(mutableSetOf()) { it.path }
-            val retainedSkillPaths = uiState.selectedSkillPaths.intersect(availablePaths)
-            if (retainedSkillPaths != uiState.selectedSkillPaths) {
+            val reconcileSelection = normalizedCwd == uiState.cwd
+            val retainedSkillPaths = if (reconcileSelection) {
+                uiState.selectedSkillPaths.intersect(availablePaths)
+            } else {
+                uiState.selectedSkillPaths
+            }
+            if (reconcileSelection && retainedSkillPaths != uiState.selectedSkillPaths) {
                 preferences.edit { putStringSet("selected_skills", retainedSkillPaths) }
             }
             uiState = uiState.copy(
@@ -509,7 +436,7 @@ class CodexViewModel(application: Application) : AndroidViewModel(application),
         val generation = ++resumeGeneration
         val previousTitle = uiState.currentThreadTitle
         uiState = uiState.copy(currentThreadTitle = "正在加载…")
-        client.request("thread/resume", JsonObject().apply {
+        client.request(CodexProtocol.ClientRequest.THREAD_RESUME, JsonObject().apply {
             addProperty("threadId", threadId)
             addProperty("excludeTurns", true)
             add("initialTurnsPage", JsonObject().apply {
@@ -569,7 +496,7 @@ class CodexViewModel(application: Application) : AndroidViewModel(application),
                     putString("current_thread_title", uiState.currentThreadTitle)
                 }
                 if (uiState.busy) {
-                    CodexConnectionService.start(getApplication(), true)
+                    startConnectionService(true)
                 } else {
                     CodexConnectionService.stop(getApplication())
                 }
@@ -586,15 +513,18 @@ class CodexViewModel(application: Application) : AndroidViewModel(application),
         val cursor = uiState.historyNextCursor ?: return
         if (uiState.historyLoading || !client.isReady()) return
         uiState = uiState.copy(historyLoading = true)
-        client.request("thread/turns/list", JsonObject().apply {
+        client.request(CodexProtocol.ClientRequest.THREAD_TURNS_LIST, JsonObject().apply {
             addProperty("threadId", threadId)
             addProperty("cursor", cursor)
             addProperty("limit", HISTORY_PAGE_SIZE)
             addProperty("sortDirection", "desc")
             addProperty("itemsView", "full")
-        }) { response ->
+        }, retryOnOverload = true) { response ->
+            if (uiState.currentThreadId != threadId) return@request
             response.error?.let {
-                uiState = uiState.copy(historyLoading = false)
+                if (uiState.currentThreadId == threadId) {
+                    uiState = uiState.copy(historyLoading = false)
+                }
                 addInfo("读取更早记录失败：${rpcError(it)}", error = true)
                 return@request
             }
@@ -614,46 +544,53 @@ class CodexViewModel(application: Application) : AndroidViewModel(application),
         }
     }
 
-    fun sendPrompt(text: String) {
+    fun sendPrompt(text: String): Boolean {
         val prompt = text.trim()
-        if (prompt.isBlank() || uiState.busy) return
+        if (prompt.isBlank() || uiState.busy) return false
         if (!client.isReady()) {
             addInfo("请先连接 Termux 中的 Codex App Server。", error = true)
-            return
+            return false
         }
         if (uiState.selectedSkillPaths.isNotEmpty()) {
             val loadedSkillPaths = uiState.availableSkills.mapTo(mutableSetOf()) { it.path }
             val missingSkillPaths = uiState.selectedSkillPaths - loadedSkillPaths
-            if (uiState.skillsLoading || missingSkillPaths.isNotEmpty()) {
+            if (uiState.skillsCwd != uiState.cwd || uiState.skillsLoading ||
+                missingSkillPaths.isNotEmpty()
+            ) {
                 addInfo("正在读取所选 Skills，请稍后再发送。")
                 if (!uiState.skillsLoading) refreshSkills(forceReload = true)
-                return
+                return false
             }
         }
 
+        val localMessageId = "local-${UUID.randomUUID()}"
         uiState = uiState.copy(
             messages = uiState.messages + UiMessage(
-                id = "local-${UUID.randomUUID()}",
+                id = localMessageId,
                 kind = MessageKind.USER,
                 text = prompt,
             ),
             busy = true,
         )
-        CodexConnectionService.start(getApplication(), true)
+        startConnectionService(true)
 
         val threadId = uiState.currentThreadId
         if (threadId == null) {
-            pendingPrompt = prompt
+            pendingPrompt = PendingPrompt(prompt, localMessageId)
             startThread()
         } else {
-            startTurn(threadId, prompt)
+            startTurn(threadId, prompt, localMessageId)
         }
+        return true
     }
 
     fun interruptTurn() {
         val threadId = uiState.currentThreadId ?: return
-        val turnId = uiState.activeTurnId ?: return
-        client.request("turn/interrupt", JsonObject().apply {
+        val turnId = uiState.activeTurnId ?: run {
+            addInfo("任务仍在启动，尚未取得可中断的 Turn ID。")
+            return
+        }
+        client.request(CodexProtocol.ClientRequest.TURN_INTERRUPT, JsonObject().apply {
             addProperty("threadId", threadId)
             addProperty("turnId", turnId)
         }) { response ->
@@ -667,7 +604,13 @@ class CodexViewModel(application: Application) : AndroidViewModel(application),
         when (pending.kind) {
             PendingKind.COMMAND, PendingKind.FILE_CHANGE -> {
                 client.respond(pending.requestId, JsonObject().apply {
-                    add("decision", selectedDecision?.payload?.deepCopy() ?: JsonPrimitive(decision))
+                    add(
+                        "decision",
+                        normalizeApprovalDecision(
+                            pending.approvalProtocol,
+                            selectedDecision?.payload ?: JsonPrimitive(decision),
+                        ),
+                    )
                 })
             }
 
@@ -696,6 +639,19 @@ class CodexViewModel(application: Application) : AndroidViewModel(application),
 
     fun answerQuestions(answers: Map<String, String>) {
         val pending = uiState.pendingAction ?: return
+        val typedAnswers = mutableMapOf<String, JsonElement>()
+        if (pending.kind == PendingKind.MCP_ELICITATION) {
+            pending.questions.forEach { question ->
+                val rawValue = answers[question.id].orEmpty()
+                if (rawValue.isBlank() && !question.required) return@forEach
+                val typed = encodeInputValue(rawValue, question.valueType)
+                if (typed == null) {
+                    addInfo("“${question.header}”的输入格式无效。", error = true)
+                    return
+                }
+                typedAnswers[question.id] = typed
+            }
+        }
         when (pending.kind) {
             PendingKind.USER_INPUT -> client.respond(pending.requestId, JsonObject().apply {
                 add("answers", JsonObject().apply {
@@ -713,9 +669,9 @@ class CodexViewModel(application: Application) : AndroidViewModel(application),
                 addProperty("action", "accept")
                 add("content", JsonObject().apply {
                     pending.questions.forEach { question ->
-                        val value = answers[question.id].orEmpty()
-                        if (value.isBlank() && !question.required) return@forEach
-                        add(question.id, typedAnswer(value, question.valueType))
+                        val value = typedAnswers[question.id] ?: return@forEach
+                        if (answers[question.id].orEmpty().isBlank() && !question.required) return@forEach
+                        add(question.id, value)
                     }
                 })
             })
@@ -734,7 +690,7 @@ class CodexViewModel(application: Application) : AndroidViewModel(application),
                     val decline = pending.decisions.firstOrNull {
                         it.key in setOf("decline", "denied", "cancel", "abort")
                     }?.payload ?: JsonPrimitive("decline")
-                    add("decision", decline.deepCopy())
+                    add("decision", normalizeApprovalDecision(pending.approvalProtocol, decline))
                 },
             )
 
@@ -763,12 +719,11 @@ class CodexViewModel(application: Application) : AndroidViewModel(application),
             serverInfo.string("platformOs"),
         ).joinToString(" / ")
         val userAgent = serverInfo.string("userAgent").orEmpty()
-        val versionWarning = userAgent.isNotBlank() && !userAgent.contains(TESTED_CODEX_VERSION)
         uiState = uiState.copy(
             connectionStatus = ConnectionStatus.CONNECTED,
             connectionMessage = buildString {
                 append(if (platform.isBlank()) "已连接 Codex" else "已连接 · $platform")
-                if (versionWarning) append(" · CLI 协议版本未验证")
+                userAgent.takeIf { it.isNotBlank() }?.let { append(" · ").append(it) }
             },
         )
         val requestedThreadId = pendingNotificationThreadId
@@ -783,6 +738,9 @@ class CodexViewModel(application: Application) : AndroidViewModel(application),
 
     override fun onDisconnected(reason: String) {
         CodexConnectionService.stop(getApplication())
+        pendingDeltas.clear()
+        fileChangePatches.clear()
+        turnDiffs.clear()
         uiState = uiState.copy(
             connectionStatus = ConnectionStatus.DISCONNECTED,
             connectionMessage = readableConnectionError(reason),
@@ -811,16 +769,16 @@ class CodexViewModel(application: Application) : AndroidViewModel(application),
             return
         }
         when (method) {
-            "turn/started" -> {
+            CodexProtocol.Notification.TURN_STARTED -> {
                 val turn = params.getAsJsonObject("turn")
                 uiState = uiState.copy(
                     activeTurnId = turn?.string("id") ?: uiState.activeTurnId,
                     busy = true,
                 )
-                CodexConnectionService.start(getApplication(), true)
+                startConnectionService(true)
             }
 
-            "turn/completed" -> {
+            CodexProtocol.Notification.TURN_COMPLETED -> {
                 flushPendingDeltas()
                 val turn = params.getAsJsonObject("turn")
                 val status = turn?.string("status") ?: "completed"
@@ -832,6 +790,8 @@ class CodexViewModel(application: Application) : AndroidViewModel(application),
                 if (status == "failed") {
                     addInfo("任务失败：${turn?.get("error")?.let(prettyGson::toJson) ?: "未知错误"}", true)
                 }
+                fileChangePatches.clear()
+                turnDiffs.clear()
                 refreshThreads()
             }
 
@@ -862,6 +822,26 @@ class CodexViewModel(application: Application) : AndroidViewModel(application),
                 )
             }
 
+            CodexProtocol.Notification.FILE_PATCH_UPDATED -> handleFileChangePatch(params)
+
+            CodexProtocol.Notification.TURN_DIFF_UPDATED -> {
+                val turnId = params.string("turnId") ?: return
+                params.string("diff")?.let { diff ->
+                    turnDiffs[turnId] = boundedText(diff, MAX_PATCH_CHARS)
+                    uiState = uiState.copy(
+                        pendingActions = uiState.pendingActions.map { pending ->
+                            if (pending.kind == PendingKind.FILE_CHANGE &&
+                                pending.rawParams.string("turnId") == turnId
+                            ) {
+                                pending.copy(detail = fileApprovalDetail(pending.rawParams))
+                            } else {
+                                pending
+                            }
+                        },
+                    )
+                }
+            }
+
             "item/commandExecution/outputDelta", "item/fileChange/outputDelta" -> {
                 appendDelta(
                     id = params.string("itemId") ?: return,
@@ -881,7 +861,7 @@ class CodexViewModel(application: Application) : AndroidViewModel(application),
                     activeTurnId = if (status == "active") uiState.activeTurnId else null,
                 )
                 if (status == "active") {
-                    CodexConnectionService.start(getApplication(), true)
+                    startConnectionService(true)
                 } else {
                     CodexConnectionService.stop(getApplication())
                 }
@@ -891,7 +871,7 @@ class CodexViewModel(application: Application) : AndroidViewModel(application),
                 params.string("threadId")?.let(::removeDeletedThread)
             }
 
-            "serverRequest/resolved" -> {
+            CodexProtocol.Notification.SERVER_REQUEST_RESOLVED -> {
                 params.get("requestId")?.let(::removePending)
             }
 
@@ -926,7 +906,7 @@ class CodexViewModel(application: Application) : AndroidViewModel(application),
 
     override fun onServerRequest(request: CodexAppServerClient.ServerRequest) {
         val pending = when (request.method) {
-            "item/commandExecution/requestApproval" -> PendingAction(
+            CodexProtocol.ServerRequest.COMMAND_APPROVAL -> PendingAction(
                 requestId = request.id,
                 kind = PendingKind.COMMAND,
                 title = "允许执行命令？",
@@ -937,20 +917,22 @@ class CodexViewModel(application: Application) : AndroidViewModel(application),
                 }.joinToString("\n\n"),
                 rawParams = request.params,
                 threadId = request.params.string("threadId"),
-                decisions = parseCommandDecisions(request.params),
+                decisions = parseApprovalDecisions(request.params, defaultApprovalDecisions()),
+                approvalProtocol = ApprovalProtocol.CURRENT,
             )
 
-            "item/fileChange/requestApproval" -> PendingAction(
+            CodexProtocol.ServerRequest.FILE_CHANGE_APPROVAL -> PendingAction(
                 requestId = request.id,
                 kind = PendingKind.FILE_CHANGE,
                 title = "允许修改文件？",
-                detail = request.params.string("reason") ?: "Codex 请求应用文件修改。",
+                detail = fileApprovalDetail(request.params),
                 rawParams = request.params,
                 threadId = request.params.string("threadId"),
-                decisions = defaultApprovalDecisions(),
+                decisions = parseApprovalDecisions(request.params, defaultApprovalDecisions()),
+                approvalProtocol = ApprovalProtocol.CURRENT,
             )
 
-            "item/permissions/requestApproval" -> PendingAction(
+            CodexProtocol.ServerRequest.PERMISSIONS_APPROVAL -> PendingAction(
                 requestId = request.id,
                 kind = PendingKind.PERMISSION,
                 title = "授予额外权限？",
@@ -963,7 +945,7 @@ class CodexViewModel(application: Application) : AndroidViewModel(application),
                 decisions = permissionDecisions(),
             )
 
-            "item/tool/requestUserInput" -> PendingAction(
+            CodexProtocol.ServerRequest.USER_INPUT -> PendingAction(
                 requestId = request.id,
                 kind = PendingKind.USER_INPUT,
                 title = "Codex 需要你的选择",
@@ -974,7 +956,7 @@ class CodexViewModel(application: Application) : AndroidViewModel(application),
                 autoResolutionMs = request.params.long("autoResolutionMs"),
             )
 
-            "mcpServer/elicitation/request" -> {
+            CodexProtocol.ServerRequest.MCP_ELICITATION -> {
                 val mode = request.params.string("mode") ?: "form"
                 val questions = if (mode.endsWith("form")) parseMcpQuestions(request.params) else emptyList()
                 PendingAction(
@@ -992,24 +974,25 @@ class CodexViewModel(application: Application) : AndroidViewModel(application),
                 )
             }
 
-            "currentTime/read" -> {
+            CodexProtocol.ServerRequest.CURRENT_TIME -> {
                 client.respond(request.id, JsonObject().apply {
                     addProperty("currentTimeAt", System.currentTimeMillis() / 1000L)
                 })
                 null
             }
 
-            "applyPatchApproval" -> PendingAction(
+            CodexProtocol.ServerRequest.LEGACY_PATCH_APPROVAL -> PendingAction(
                 requestId = request.id,
                 kind = PendingKind.FILE_CHANGE,
                 title = "允许应用补丁？",
-                detail = request.params.string("reason") ?: "Codex 请求应用补丁。",
+                detail = legacyFileApprovalDetail(request.params),
                 rawParams = request.params,
                 threadId = request.params.string("conversationId"),
                 decisions = legacyApprovalDecisions(),
+                approvalProtocol = ApprovalProtocol.LEGACY,
             )
 
-            "execCommandApproval" -> PendingAction(
+            CodexProtocol.ServerRequest.LEGACY_COMMAND_APPROVAL -> PendingAction(
                 requestId = request.id,
                 kind = PendingKind.COMMAND,
                 title = "允许执行命令？",
@@ -1017,6 +1000,7 @@ class CodexViewModel(application: Application) : AndroidViewModel(application),
                 rawParams = request.params,
                 threadId = request.params.string("conversationId"),
                 decisions = legacyApprovalDecisions(),
+                approvalProtocol = ApprovalProtocol.LEGACY,
             )
 
             else -> {
@@ -1048,8 +1032,9 @@ class CodexViewModel(application: Application) : AndroidViewModel(application),
             if (uiState.cwd.isNotBlank()) addProperty("cwd", uiState.cwd)
             if (uiState.model.isNotBlank()) addProperty("model", uiState.model)
         }
-        client.request("thread/start", params) { response ->
+        client.request(CodexProtocol.ClientRequest.THREAD_START, params) { response ->
             response.error?.let {
+                pendingPrompt?.messageId?.let(::removeMessage)
                 pendingPrompt = null
                 uiState = uiState.copy(busy = false)
                 CodexConnectionService.stop(getApplication())
@@ -1059,6 +1044,7 @@ class CodexViewModel(application: Application) : AndroidViewModel(application),
             val thread = response.result?.getAsJsonObject("thread")
             val threadId = thread?.string("id")
             if (threadId == null) {
+                pendingPrompt?.messageId?.let(::removeMessage)
                 pendingPrompt = null
                 uiState = uiState.copy(busy = false)
                 CodexConnectionService.stop(getApplication())
@@ -1076,20 +1062,26 @@ class CodexViewModel(application: Application) : AndroidViewModel(application),
                 putString("current_thread_title", uiState.currentThreadTitle)
             }
             subscribedThreadId = threadId
-            pendingPrompt?.let { prompt ->
+            pendingPrompt?.let { pending ->
                 pendingPrompt = null
-                startTurn(threadId, prompt)
+                startTurn(threadId, pending.text, pending.messageId)
             }
             refreshThreads()
         }
     }
 
-    private fun loadModelsPage(cursor: String?, accumulated: List<CodexModel>) {
-        client.request("model/list", JsonObject().apply {
+    private fun loadModelsPage(
+        cursor: String?,
+        accumulated: List<CodexModel>,
+        generation: Int,
+        visitedCursors: Set<String>,
+    ) {
+        client.request(CodexProtocol.ClientRequest.MODEL_LIST, JsonObject().apply {
             addProperty("limit", 100)
             addProperty("includeHidden", false)
             cursor?.let { addProperty("cursor", it) }
-        }) { response ->
+        }, retryOnOverload = true) { response ->
+            if (generation != modelListGeneration) return@request
             response.error?.let {
                 uiState = uiState.copy(
                     modelsLoading = false,
@@ -1123,8 +1115,13 @@ class CodexViewModel(application: Application) : AndroidViewModel(application),
             }.orEmpty()
             val models = (accumulated + page).distinctBy { it.model }
             val nextCursor = result.string("nextCursor")
-            if (nextCursor != null) {
-                loadModelsPage(nextCursor, models)
+            if (nextCursor != null && nextCursor !in visitedCursors) {
+                loadModelsPage(
+                    nextCursor,
+                    models,
+                    generation,
+                    visitedCursors + nextCursor,
+                )
             } else {
                 uiState = uiState.copy(
                     availableModels = models,
@@ -1135,10 +1132,10 @@ class CodexViewModel(application: Application) : AndroidViewModel(application),
         }
     }
 
-    private fun startTurn(threadId: String, prompt: String) {
+    private fun startTurn(threadId: String, prompt: String, messageId: String) {
         val selectedSkills = uiState.availableSkills
             .filter { it.path in uiState.selectedSkillPaths }
-        client.request("turn/start", JsonObject().apply {
+        client.request(CodexProtocol.ClientRequest.TURN_START, JsonObject().apply {
             addProperty("threadId", threadId)
             if (uiState.cwd.isNotBlank()) addProperty("cwd", uiState.cwd)
             if (uiState.model.isNotBlank()) {
@@ -1164,6 +1161,7 @@ class CodexViewModel(application: Application) : AndroidViewModel(application),
             response.error?.let {
                 uiState = uiState.copy(busy = false, activeTurnId = null)
                 CodexConnectionService.stop(getApplication())
+                removeMessage(messageId)
                 addInfo("发送失败：${rpcError(it)}", error = true)
                 return@request
             }
@@ -1205,7 +1203,10 @@ class CodexViewModel(application: Application) : AndroidViewModel(application),
             if (index >= 0) {
                 val current = messages[index]
                 messages[index] = current.copy(
-                    text = current.text + buffered.text,
+                    text = boundedText(
+                        current.text + buffered.text,
+                        MAX_STREAMED_MESSAGE_CHARS,
+                    ),
                     running = true,
                 )
             } else {
@@ -1213,7 +1214,7 @@ class CodexViewModel(application: Application) : AndroidViewModel(application),
                     id = id,
                     kind = buffered.kind,
                     title = buffered.title,
-                    text = buffered.text.toString(),
+                    text = boundedText(buffered.text.toString(), MAX_STREAMED_MESSAGE_CHARS),
                     running = true,
                 )
             }
@@ -1239,7 +1240,7 @@ class CodexViewModel(application: Application) : AndroidViewModel(application),
             "agentMessage" -> UiMessage(
                 id = id,
                 kind = MessageKind.ASSISTANT,
-                text = item.string("text") ?: "",
+                text = boundedText(item.string("text").orEmpty(), MAX_MESSAGE_CHARS),
                 running = running,
                 outcome = outcome,
             )
@@ -1248,7 +1249,7 @@ class CodexViewModel(application: Application) : AndroidViewModel(application),
                 id = id,
                 kind = MessageKind.TOOL,
                 title = "计划",
-                text = item.string("text") ?: "",
+                text = boundedText(item.string("text").orEmpty(), MAX_TOOL_OUTPUT_CHARS),
                 running = running,
                 outcome = outcome,
             )
@@ -1262,7 +1263,7 @@ class CodexViewModel(application: Application) : AndroidViewModel(application),
                     outcome == MessageOutcome.DECLINED -> "命令已拒绝"
                     else -> "命令执行完成"
                 },
-                text = buildString {
+                text = boundedText(buildString {
                     append(item.string("command") ?: "")
                     item.string("aggregatedOutput")?.takeIf { it.isNotBlank() }?.let {
                         append("\n\n").append(it)
@@ -1270,7 +1271,7 @@ class CodexViewModel(application: Application) : AndroidViewModel(application),
                     item.long("exitCode")
                         ?.takeIf { it != 0L }
                         ?.let { append("\n\n退出码：").append(it) }
-                },
+                }, MAX_TOOL_OUTPUT_CHARS),
                 running = running,
                 outcome = outcome,
             )
@@ -1284,7 +1285,10 @@ class CodexViewModel(application: Application) : AndroidViewModel(application),
                     outcome == MessageOutcome.DECLINED -> "文件修改已拒绝"
                     else -> "文件修改完成"
                 },
-                text = item.get("changes")?.let(prettyGson::toJson) ?: "等待修改信息…",
+                text = boundedText(
+                    item.get("changes")?.let(prettyGson::toJson) ?: "等待修改信息…",
+                    MAX_PATCH_CHARS,
+                ),
                 running = running,
                 outcome = outcome,
             )
@@ -1293,13 +1297,13 @@ class CodexViewModel(application: Application) : AndroidViewModel(application),
                 id = id,
                 kind = MessageKind.TOOL,
                 title = "MCP · ${item.string("server") ?: "tool"}",
-                text = buildString {
+                text = boundedText(buildString {
                     append(item.string("tool") ?: "工具调用")
                     item.get("arguments")?.let { append("\n\n").append(prettyGson.toJson(it)) }
                     item.get("result")?.takeUnless { it.isJsonNull }?.let {
                         append("\n\n").append(prettyGson.toJson(it))
                     }
-                },
+                }, MAX_TOOL_OUTPUT_CHARS),
                 running = running,
                 outcome = outcome,
             )
@@ -1328,6 +1332,10 @@ class CodexViewModel(application: Application) : AndroidViewModel(application),
         uiState = uiState.copy(messages = messages)
     }
 
+    private fun removeMessage(id: String) {
+        uiState = uiState.copy(messages = uiState.messages.filterNot { it.id == id })
+    }
+
     private fun addInfo(text: String, error: Boolean = false) {
         uiState = uiState.copy(
             messages = uiState.messages + UiMessage(
@@ -1336,6 +1344,14 @@ class CodexViewModel(application: Application) : AndroidViewModel(application),
                 text = text,
             )
         )
+    }
+
+    private fun startConnectionService(busy: Boolean) {
+        if (CodexConnectionService.start(getApplication(), busy) || foregroundServiceWarningShown) {
+            return
+        }
+        foregroundServiceWarningShown = true
+        addInfo("系统限制了后台前台服务；请保持应用可见或允许后台运行。", error = true)
     }
 
     private fun parseTurnsMessages(turnsInput: JsonArray, newestFirst: Boolean): List<UiMessage> {
@@ -1352,15 +1368,30 @@ class CodexViewModel(application: Application) : AndroidViewModel(application),
                             ?.mapNotNull { it.asJsonObject.string("text") }
                             ?.joinToString("\n")
                             .orEmpty()
-                        if (text.isNotBlank()) messages += UiMessage(id, MessageKind.USER, text)
+                        if (text.isNotBlank()) {
+                            messages += UiMessage(
+                                id,
+                                MessageKind.USER,
+                                boundedText(text, MAX_MESSAGE_CHARS),
+                            )
+                        }
                     }
 
                     "agentMessage" -> item.string("text")?.takeIf { it.isNotBlank() }?.let {
-                        messages += UiMessage(id, MessageKind.ASSISTANT, it)
+                        messages += UiMessage(
+                            id,
+                            MessageKind.ASSISTANT,
+                            boundedText(it, MAX_MESSAGE_CHARS),
+                        )
                     }
 
                     "plan" -> item.string("text")?.takeIf { it.isNotBlank() }?.let {
-                        messages += UiMessage(id, MessageKind.TOOL, it, "计划")
+                        messages += UiMessage(
+                            id,
+                            MessageKind.TOOL,
+                            boundedText(it, MAX_TOOL_OUTPUT_CHARS),
+                            "计划",
+                        )
                     }
 
                     "commandExecution" -> {
@@ -1370,12 +1401,12 @@ class CodexViewModel(application: Application) : AndroidViewModel(application),
                         id = id,
                         kind = MessageKind.TOOL,
                         title = if (status == "failed" || exitCode != 0L) "命令执行失败" else "命令",
-                        text = buildString {
+                        text = boundedText(buildString {
                             append(item.string("command") ?: "")
                             item.string("aggregatedOutput")?.takeIf { it.isNotBlank() }?.let {
                                 append("\n\n").append(it)
                             }
-                        },
+                        }, MAX_TOOL_OUTPUT_CHARS),
                         outcome = if (status == "failed" || exitCode != 0L) {
                             MessageOutcome.FAILED
                         } else {
@@ -1388,7 +1419,10 @@ class CodexViewModel(application: Application) : AndroidViewModel(application),
                         id = id,
                         kind = MessageKind.TOOL,
                         title = "文件修改",
-                        text = item.get("changes")?.let(prettyGson::toJson) ?: "",
+                        text = boundedText(
+                            item.get("changes")?.let(prettyGson::toJson) ?: "",
+                            MAX_PATCH_CHARS,
+                        ),
                         outcome = if (item.string("status") == "failed") {
                             MessageOutcome.FAILED
                         } else {
@@ -1421,6 +1455,80 @@ class CodexViewModel(application: Application) : AndroidViewModel(application),
         return messages
     }
 
+    private fun handleFileChangePatch(params: JsonObject) {
+        val itemId = params.string("itemId") ?: return
+        val patch = formatFileChanges(params.getAsJsonArray("changes"))
+        if (patch.isBlank()) return
+        fileChangePatches[itemId] = patch
+        uiState = uiState.copy(
+            pendingActions = uiState.pendingActions.map { pending ->
+                if (pending.kind == PendingKind.FILE_CHANGE &&
+                    pending.rawParams.string("itemId") == itemId
+                ) {
+                    pending.copy(detail = fileApprovalDetail(pending.rawParams))
+                } else {
+                    pending
+                }
+            },
+        )
+        upsertMessage(
+            UiMessage(
+                id = itemId,
+                kind = MessageKind.TOOL,
+                title = "待审批的文件修改",
+                text = patch,
+                running = true,
+            )
+        )
+    }
+
+    private fun fileApprovalDetail(params: JsonObject): String {
+        val itemPatch = params.string("itemId")?.let(fileChangePatches::get)
+        val turnPatch = params.string("turnId")?.let(turnDiffs::get)
+        return approvalDetail(
+            params.string("reason") ?: "Codex 请求应用文件修改。",
+            itemPatch ?: turnPatch,
+        )
+    }
+
+    private fun legacyFileApprovalDetail(params: JsonObject): String {
+        val changes = params.get("fileChanges")
+            ?.takeIf { it.isJsonObject }
+            ?.asJsonObject
+            ?.entrySet()
+            ?.joinToString("\n\n") { (path, changeElement) ->
+                val change = changeElement.takeIf { it.isJsonObject }?.asJsonObject
+                val type = change?.string("type") ?: "change"
+                val content = change?.string("unified_diff")
+                    ?: change?.string("content")
+                    ?: prettyGson.toJson(changeElement)
+                "$type · $path\n$content"
+            }
+        return approvalDetail(
+            params.string("reason") ?: "Codex 请求应用补丁。",
+            changes?.let { boundedText(it, MAX_PATCH_CHARS) },
+        )
+    }
+
+    private fun formatFileChanges(changes: JsonArray?): String {
+        return changes?.mapNotNull { element ->
+            val change = element.takeIf { it.isJsonObject }?.asJsonObject ?: return@mapNotNull null
+            val path = change.string("path") ?: return@mapNotNull null
+            val kind = change.string("kind") ?: "update"
+            val diff = change.string("diff").orEmpty()
+            "$kind · $path\n$diff"
+        }.orEmpty().joinToString("\n\n").let { boundedText(it, MAX_PATCH_CHARS) }
+    }
+
+    private fun approvalDetail(reason: String, patch: String?): String {
+        return if (patch.isNullOrBlank()) reason else "$reason\n\n$patch"
+    }
+
+    private fun boundedText(text: String, maxChars: Int): String {
+        if (text.length <= maxChars) return text
+        return text.take(maxChars) + "\n\n[内容过长，已在客户端截断]"
+    }
+
     private fun parseQuestions(params: JsonObject): List<InputQuestion> {
         return params.getAsJsonArray("questions")?.mapNotNull { element ->
             val question = element.asJsonObject
@@ -1430,7 +1538,12 @@ class CodexViewModel(application: Application) : AndroidViewModel(application),
                 header = question.string("header") ?: "问题",
                 prompt = question.string("question") ?: "请输入回答",
                 options = question.getAsJsonArray("options")
-                    ?.mapNotNull { it.asJsonObject.string("label") }
+                    ?.mapNotNull { optionElement ->
+                        val option = optionElement.takeIf { it.isJsonObject }?.asJsonObject
+                            ?: return@mapNotNull null
+                        val label = option.string("label") ?: return@mapNotNull null
+                        InputOption(label, option.string("description").orEmpty())
+                    }
                     .orEmpty(),
                 secret = question.bool("isSecret") == true,
                 required = true,
@@ -1445,12 +1558,20 @@ class CodexViewModel(application: Application) : AndroidViewModel(application),
             ?.toSet()
             .orEmpty()
         val properties = schema.getAsJsonObject("properties") ?: return emptyList()
-        return properties.entrySet().map { (id, element) ->
-            val property = element.asJsonObject
+        return properties.entrySet().mapNotNull { (id, element) ->
+            val property = element.takeIf { it.isJsonObject }?.asJsonObject
+                ?: return@mapNotNull null
             val options = property.getAsJsonArray("enum")
-                ?.mapNotNull { runCatching { it.asString }.getOrNull() }
+                ?.mapNotNull { option ->
+                    runCatching { InputOption(option.asString) }.getOrNull()
+                }
                 ?: property.getAsJsonArray("oneOf")
-                    ?.mapNotNull { it.asJsonObject.string("const") }
+                    ?.mapNotNull { optionElement ->
+                        val option = optionElement.takeIf { it.isJsonObject }?.asJsonObject
+                            ?: return@mapNotNull null
+                        val label = option.string("const") ?: return@mapNotNull null
+                        InputOption(label, option.string("description").orEmpty())
+                    }
                     .orEmpty()
             InputQuestion(
                 id = id,
@@ -1464,11 +1585,14 @@ class CodexViewModel(application: Application) : AndroidViewModel(application),
         }
     }
 
-    private fun parseCommandDecisions(params: JsonObject): List<PendingDecision> {
+    private fun parseApprovalDecisions(
+        params: JsonObject,
+        fallback: List<PendingDecision>,
+    ): List<PendingDecision> {
         val available = params.getAsJsonArray("availableDecisions")
             ?.mapNotNull(::decisionFromJson)
             .orEmpty()
-        return available.ifEmpty { defaultApprovalDecisions() }
+        return available.ifEmpty { fallback }
     }
 
     private fun decisionFromJson(element: JsonElement): PendingDecision? {
@@ -1529,16 +1653,6 @@ class CodexViewModel(application: Application) : AndroidViewModel(application),
         if (!appInForeground) remaining.firstOrNull()?.let(notifier::showPendingAction)
     }
 
-    private fun typedAnswer(value: String, type: String): JsonElement = when (type) {
-        "boolean" -> JsonPrimitive(value.equals("true", true) || value == "1")
-        "integer" -> JsonPrimitive(value.toLongOrNull() ?: 0L)
-        "number" -> JsonPrimitive(value.toDoubleOrNull() ?: 0.0)
-        "array" -> JsonArray().apply {
-            value.split(',').map(String::trim).filter(String::isNotEmpty).forEach(::add)
-        }
-        else -> JsonPrimitive(value)
-    }
-
     fun readDirectories(
         path: String,
         callback: (List<RemoteDirectory>, String?) -> Unit,
@@ -1547,7 +1661,11 @@ class CodexViewModel(application: Application) : AndroidViewModel(application),
             callback(emptyList(), "请先连接 App Server")
             return
         }
-        client.request("fs/readDirectory", JsonObject().apply { addProperty("path", path) }) { response ->
+        client.request(
+            CodexProtocol.ClientRequest.FS_READ_DIRECTORY,
+            JsonObject().apply { addProperty("path", path) },
+            retryOnOverload = true,
+        ) { response ->
             response.error?.let {
                 callback(emptyList(), rpcError(it))
                 return@request
@@ -1569,7 +1687,10 @@ class CodexViewModel(application: Application) : AndroidViewModel(application),
     private fun unsubscribe(threadId: String?) {
         threadId ?: return
         if (!client.isReady()) return
-        client.request("thread/unsubscribe", JsonObject().apply { addProperty("threadId", threadId) })
+        client.request(
+            CodexProtocol.ClientRequest.THREAD_UNSUBSCRIBE,
+            JsonObject().apply { addProperty("threadId", threadId) },
+        )
     }
 
     private fun loadAndMigrateToken(): String {
@@ -1605,10 +1726,12 @@ class CodexViewModel(application: Application) : AndroidViewModel(application),
 
     private companion object {
         const val MAX_THREAD_LIST_SIZE = 250
-        const val HISTORY_PAGE_SIZE = 40
+        const val HISTORY_PAGE_SIZE = 20
         const val DELTA_FLUSH_INTERVAL_MS = 32L
         const val MAX_STREAMED_MESSAGE_CHARS = 200_000
-        const val TESTED_CODEX_VERSION = "0.144.1"
+        const val MAX_MESSAGE_CHARS = 240_000
+        const val MAX_TOOL_OUTPUT_CHARS = 200_000
+        const val MAX_PATCH_CHARS = 300_000
         val GLOBAL_THREAD_EVENTS = setOf(
             "serverRequest/resolved",
             "thread/archived",
@@ -1618,22 +1741,4 @@ class CodexViewModel(application: Application) : AndroidViewModel(application),
         )
         val RECONNECT_TOKEN = Any()
     }
-}
-
-private fun JsonObject.string(name: String): String? = try {
-    get(name)?.takeUnless { it.isJsonNull }?.asString
-} catch (_: Throwable) {
-    null
-}
-
-private fun JsonObject.long(name: String): Long? = try {
-    get(name)?.takeUnless { it.isJsonNull }?.asLong
-} catch (_: Throwable) {
-    null
-}
-
-private fun JsonObject.bool(name: String): Boolean? = try {
-    get(name)?.takeUnless { it.isJsonNull }?.asBoolean
-} catch (_: Throwable) {
-    null
 }

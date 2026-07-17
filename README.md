@@ -7,7 +7,7 @@
 - Material Design 3、自适应浅色/深色与动态配色
 - 新建、查看、恢复并永久删除本地 Codex 会话
 - 流式显示回复、计划、命令执行、文件修改和工具状态
-- 命令与文件修改审批
+- 命令审批与文件 Diff 审阅
 - 审批队列、服务端自动解决同步和 MCP elicitation 表单/链接
 - 中断正在运行的任务
 - 从 App Server 获取模型、Codex 有效配置中的默认思考深度与 Skills，并在设置对话框中选择
@@ -15,7 +15,8 @@
 - 运行任务时使用前台服务保持连接，后台审批或用户输入时发送系统通知
 - 自定义 App Server 地址和 Bearer Token
 - 会话通知隔离、断线自动恢复、历史分页和流式消息批处理
-- OkHttp WebSocket 心跳、请求超时和服务端过载指数退避
+- Markwon/CommonMark Markdown 渲染、表格、任务列表与安全外链
+- OkHttp WebSocket 心跳、请求超时和只读请求过载重试
 
 ## 在 Termux 中启动 Codex
 
@@ -72,6 +73,8 @@ app/build/outputs/apk/debug/app-debug.apk
 
 默认配置只允许 `ws://` 连接回环地址；非本机地址会被客户端强制要求使用 `wss://`。即使在 Android 本机也建议始终启用 capability token，因为其他安装了网络权限的应用也可能访问设备回环端口。Token 使用 Android Keystore 加密保存且不会进入系统备份。
 
-当前 Codex App Server WebSocket 传输仍是实验性接口，CLI 升级后协议可能变化。本项目按本机 `codex-cli 0.144.1` 生成的协议实现核心稳定流程。
+当前 Codex App Server WebSocket 传输仍是实验性接口，CLI 升级后协议可能变化。协议方法集中维护在 `CodexProtocol.kt`，审批决策优先读取服务端运行时提供的 `availableDecisions`。
 
-Android 构建使用 `compileSdk/targetSdk 36`、Android Gradle Plugin 8.13.2、Gradle 8.14.5 与 Kotlin 2.3.0。协议客户端会在检测到未经验证的 Codex CLI 版本时显示兼容性提示。
+升级 Codex CLI 后，可在项目目录执行 `./termux/verify-codex-protocol.sh`，检查当前 CLI schema 是否出现尚未适配的服务端请求。
+
+Android 构建使用 `compileSdk/targetSdk 36`、Android Gradle Plugin 8.13.2、Gradle 8.14.5 与 Kotlin 2.3.0。连接状态会显示 App Server 返回的实际 CLI User-Agent，不再依赖固定版本号判断兼容性。

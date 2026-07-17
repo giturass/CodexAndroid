@@ -2,7 +2,6 @@ package com.termuxcodex.client.data
 
 import android.os.Handler
 import android.os.Looper
-import android.os.SystemClock
 import com.google.gson.Gson
 import com.google.gson.JsonElement
 import com.google.gson.JsonObject
@@ -40,8 +39,15 @@ class CodexAppServerClient(private val listener: Listener) {
         val params: JsonObject,
         val callback: (RpcResult) -> Unit,
         val attempt: Int,
+        val timeoutMs: Long,
+        val retryOnOverload: Boolean,
+        val connectionGeneration: Long,
         val timeout: Runnable,
-        val startedAt: Long = SystemClock.elapsedRealtime(),
+    )
+
+    private class ScheduledRetry(
+        val callback: (RpcResult) -> Unit,
+        val runnable: Runnable,
     )
 
     private val gson = Gson()
@@ -49,7 +55,9 @@ class CodexAppServerClient(private val listener: Listener) {
     private val connectionExecutor = Executors.newCachedThreadPool()
     private val writerExecutor = Executors.newSingleThreadExecutor()
     private val nextId = AtomicLong(1)
+    private val connectionGeneration = AtomicLong(0)
     private val pending = ConcurrentHashMap<String, PendingRpc>()
+    private val scheduledRetries = mutableSetOf<ScheduledRetry>()
 
     @Volatile
     private var webSocket: AppServerWebSocket? = null
@@ -76,10 +84,18 @@ class CodexAppServerClient(private val listener: Listener) {
                         addProperty("version", BuildConfig.VERSION_NAME)
                     })
                     add("capabilities", JsonObject().apply {
-                        addProperty("experimentalApi", true)
+                        addProperty("experimentalApi", false)
+                        addProperty("mcpServerOpenaiFormElicitation", true)
+                        addProperty("requestAttestation", false)
                     })
                 }
-                requestInternal("initialize", params, attempt = 0, timeoutMs = INITIALIZE_TIMEOUT_MS) { response ->
+                requestInternal(
+                    CodexProtocol.ClientRequest.INITIALIZE,
+                    params,
+                    attempt = 0,
+                    timeoutMs = INITIALIZE_TIMEOUT_MS,
+                    retryOnOverload = true,
+                ) { response ->
                     if (webSocket !== candidate) return@requestInternal
                     if (response.error != null) {
                         failConnection(candidate, "初始化失败：${errorMessage(response.error)}")
@@ -156,8 +172,16 @@ class CodexAppServerClient(private val listener: Listener) {
         method: String,
         params: JsonObject = JsonObject(),
         timeoutMs: Long = REQUEST_TIMEOUT_MS,
+        retryOnOverload: Boolean = false,
         callback: (RpcResult) -> Unit = {},
-    ): Long = requestInternal(method, params.deepCopy(), attempt = 0, timeoutMs, callback)
+    ): Long = requestInternal(
+        method,
+        params.deepCopy(),
+        attempt = 0,
+        timeoutMs,
+        retryOnOverload,
+        callback,
+    )
 
     fun notification(method: String, params: JsonObject = JsonObject()) {
         send(JsonObject().apply {
@@ -185,14 +209,25 @@ class CodexAppServerClient(private val listener: Listener) {
         params: JsonObject,
         attempt: Int,
         timeoutMs: Long,
+        retryOnOverload: Boolean,
         callback: (RpcResult) -> Unit,
     ): Long {
         val id = nextId.getAndIncrement()
+        val generation = connectionGeneration.get()
         val timeout = Runnable {
             val removed = pending.remove(id.toString()) ?: return@Runnable
             removed.callback(RpcResult(error = rpcError(-32098, "请求超时：${removed.method}")))
         }
-        pending[id.toString()] = PendingRpc(method, params.deepCopy(), callback, attempt, timeout)
+        pending[id.toString()] = PendingRpc(
+            method,
+            params.deepCopy(),
+            callback,
+            attempt,
+            timeoutMs,
+            retryOnOverload,
+            generation,
+            timeout,
+        )
         mainHandler.postDelayed(timeout, timeoutMs)
         val accepted = send(JsonObject().apply {
             addProperty("method", method)
@@ -236,21 +271,31 @@ class CodexAppServerClient(private val listener: Listener) {
             val request = pending.remove(id.toString()) ?: return
             mainHandler.removeCallbacks(request.timeout)
             val error = message.objectOrNull("error")
-            if (error?.get("code")?.asInt == SERVER_OVERLOADED && request.attempt < MAX_RETRIES) {
+            if (error?.get("code")?.asInt == SERVER_OVERLOADED && request.retryOnOverload &&
+                request.attempt < MAX_RETRIES
+            ) {
                 val delay = retryDelay(request.attempt)
-                mainHandler.postDelayed({
-                    if (webSocket != null) {
+                lateinit var scheduled: ScheduledRetry
+                val runnable = Runnable {
+                    scheduledRetries.remove(scheduled)
+                    if (webSocket != null &&
+                        connectionGeneration.get() == request.connectionGeneration
+                    ) {
                         requestInternal(
                             request.method,
                             request.params,
                             request.attempt + 1,
-                            REQUEST_TIMEOUT_MS,
+                            request.timeoutMs,
+                            request.retryOnOverload,
                             request.callback,
                         )
                     } else {
                         request.callback(RpcResult(error = rpcError(-32097, "连接已断开")))
                     }
-                }, delay)
+                }
+                scheduled = ScheduledRetry(request.callback, runnable)
+                scheduledRetries += scheduled
+                mainHandler.postDelayed(runnable, delay)
                 return
             }
             request.callback(
@@ -287,6 +332,7 @@ class CodexAppServerClient(private val listener: Listener) {
     }
 
     private fun disconnectInternal(reason: String, notify: Boolean) {
+        connectionGeneration.incrementAndGet()
         val previous = webSocket
         webSocket = null
         ready = false
@@ -300,6 +346,12 @@ class CodexAppServerClient(private val listener: Listener) {
         pending.clear()
         requests.forEach {
             mainHandler.removeCallbacks(it.timeout)
+            mainHandler.post { it.callback(RpcResult(error = rpcError(-32097, reason))) }
+        }
+        val retries = scheduledRetries.toList()
+        scheduledRetries.clear()
+        retries.forEach {
+            mainHandler.removeCallbacks(it.runnable)
             mainHandler.post { it.callback(RpcResult(error = rpcError(-32097, reason))) }
         }
     }

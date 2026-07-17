@@ -20,6 +20,9 @@ object ConnectionSecurity {
             return Validation(normalized, "地址必须以 ws:// 或 wss:// 开头")
         }
         val host = uri.host ?: return Validation(normalized, "App Server 地址缺少主机名")
+        if (uri.userInfo != null) {
+            return Validation(normalized, "App Server 地址不能包含用户名或密码")
+        }
         val loopback = isLoopbackHost(host)
         if (scheme == "ws" && !loopback) {
             return Validation(normalized, "非本机连接必须使用 wss://，禁止明文传输")
@@ -30,6 +33,11 @@ object ConnectionSecurity {
     fun isLoopbackHost(host: String): Boolean {
         if (host.equals("localhost", ignoreCase = true)) return true
         val normalized = host.removePrefix("[").removeSuffix("]").lowercase()
-        return normalized == "::1" || normalized.startsWith("127.")
+        if (normalized == "::1") return true
+        val octets = normalized.split('.')
+        return octets.size == 4 && octets.all { part ->
+            part.isNotEmpty() && part.length <= 3 && part.all(Char::isDigit) &&
+                part.toIntOrNull() in 0..255
+        } && octets.first() == "127"
     }
 }

@@ -5,6 +5,17 @@ PORT="${1:-4500}"
 TOKEN_FILE="${CODEX_APP_SERVER_TOKEN_FILE:-$HOME/.codex/app-server-token}"
 WAKE_LOCKED=0
 
+case "$PORT" in
+    ''|*[!0-9]*)
+        echo "端口必须是 1 到 65535 之间的整数。" >&2
+        exit 1
+        ;;
+esac
+if [ "$PORT" -lt 1 ] || [ "$PORT" -gt 65535 ]; then
+    echo "端口必须是 1 到 65535 之间的整数。" >&2
+    exit 1
+fi
+
 if ! command -v codex >/dev/null 2>&1; then
     echo "未找到 codex，请先在 Termux 中安装 Codex CLI。" >&2
     exit 1
@@ -21,18 +32,22 @@ cleanup() {
 }
 trap cleanup EXIT INT TERM
 
+umask 077
 if [ ! -s "$TOKEN_FILE" ]; then
     mkdir -p "$(dirname "$TOKEN_FILE")"
-    umask 077
     if command -v openssl >/dev/null 2>&1; then
         openssl rand -hex 32 > "$TOKEN_FILE"
     else
         od -An -N32 -tx1 /dev/urandom | tr -d ' \n' > "$TOKEN_FILE"
     fi
-    chmod 600 "$TOKEN_FILE"
 fi
+chmod 600 "$TOKEN_FILE"
 
 TOKEN="$(tr -d '\r\n' < "$TOKEN_FILE")"
+if [ -z "$TOKEN" ]; then
+    echo "App Server Token 文件为空：$TOKEN_FILE" >&2
+    exit 1
+fi
 
 echo "Codex Android App Server: ws://127.0.0.1:${PORT}"
 echo "App Server 传输 Token: ${TOKEN}"
