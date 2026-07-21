@@ -14,11 +14,12 @@ object CodexProtocol {
         const val THREAD_DELETE = "thread/delete"
         const val THREAD_LIST = "thread/list"
         const val THREAD_RESUME = "thread/resume"
+        const val THREAD_SET_NAME = "thread/setName"
         const val THREAD_START = "thread/start"
         const val THREAD_TURNS_LIST = "thread/turns/list"
-        const val THREAD_UNSUBSCRIBE = "thread/unsubscribe"
         const val TURN_INTERRUPT = "turn/interrupt"
         const val TURN_START = "turn/start"
+        const val TURN_STEER = "turn/steer"
     }
 
     object ServerRequest {
@@ -27,7 +28,6 @@ object CodexProtocol {
         const val PERMISSIONS_APPROVAL = "item/permissions/requestApproval"
         const val USER_INPUT = "item/tool/requestUserInput"
         const val MCP_ELICITATION = "mcpServer/elicitation/request"
-        const val CURRENT_TIME = "currentTime/read"
         const val LEGACY_PATCH_APPROVAL = "applyPatchApproval"
         const val LEGACY_COMMAND_APPROVAL = "execCommandApproval"
         const val DYNAMIC_TOOL_CALL = "item/tool/call"

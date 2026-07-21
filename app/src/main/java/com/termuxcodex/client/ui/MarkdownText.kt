@@ -3,13 +3,17 @@ package com.termuxcodex.client.ui
 import android.app.Activity
 import android.content.Intent
 import android.graphics.Typeface
+import android.text.SpannableStringBuilder
 import android.text.Spanned
 import android.text.method.LinkMovementMethod
+import android.text.style.URLSpan
 import android.util.TypedValue
 import android.view.View
 import android.widget.TextView
+import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material3.LocalContentColor
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.produceState
@@ -81,13 +85,31 @@ fun MarkdownText(
             })
             .build()
     }
-    val rendered by produceState<Spanned?>(null, markwon, markdown) {
-        value = withContext(Dispatchers.Default) { markwon.toMarkdown(markdown) }
+    val rendered by produceState<RenderedMarkdown?>(null, markwon, markdown) {
+        value = withContext(Dispatchers.Default) {
+            RenderedMarkdown(
+                source = markdown,
+                content = removeUnsafeLinks(markwon.toMarkdown(markdown)),
+            )
+        }
     }
     val fontSizePx = remember(style.fontSize, density) {
         if (style.fontSize == TextUnit.Unspecified) null else with(density) { style.fontSize.toPx() }
     }
     val monospace = style.fontFamily == FontFamily.Monospace
+    val parsed = rendered?.takeIf { it.source == markdown }?.content
+
+    if (parsed == null) {
+        SelectionContainer {
+            Text(
+                text = markdown,
+                modifier = modifier,
+                style = style,
+                color = resolvedColor,
+            )
+        }
+        return
+    }
 
     AndroidView(
         modifier = modifier,
@@ -98,20 +120,49 @@ fun MarkdownText(
                 movementMethod = LinkMovementMethod.getInstance()
                 includeFontPadding = false
                 setLineSpacing(0f, 1.08f)
+                setTextColor(resolvedColor.toArgb())
+                fontSizePx?.let { setTextSize(TypedValue.COMPLEX_UNIT_PX, it) }
+                typeface = if (monospace) Typeface.MONOSPACE else Typeface.DEFAULT
+                markwon.setParsedMarkdown(this, parsed)
             }
         },
         update = { textView ->
             textView.setTextColor(resolvedColor.toArgb())
             fontSizePx?.let { textView.setTextSize(TypedValue.COMPLEX_UNIT_PX, it) }
             textView.typeface = if (monospace) Typeface.MONOSPACE else Typeface.DEFAULT
-            val parsed = rendered
-            if (parsed == null) {
-                if (textView.text.toString() != markdown) textView.text = markdown
-            } else if (textView.text !== parsed) {
+            if (textView.text !== parsed) {
                 markwon.setParsedMarkdown(textView, parsed)
             }
         },
     )
+}
+
+private data class RenderedMarkdown(
+    val source: String,
+    val content: Spanned,
+)
+
+private fun removeUnsafeLinks(rendered: Spanned): Spanned {
+    val sanitized = SpannableStringBuilder(rendered)
+    sanitized.getSpans(0, sanitized.length, URLSpan::class.java)
+        .filterNot { isAllowedExternalLink(it.url) }
+        .sortedByDescending { sanitized.getSpanStart(it) }
+        .forEach { span ->
+            val start = sanitized.getSpanStart(span)
+            val end = sanitized.getSpanEnd(span)
+            val visibleText = sanitized.substring(start, end)
+            sanitized.removeSpan(span)
+            if (start >= 0 && end >= start && visibleText != span.url) {
+                sanitized.replace(start, end, span.url)
+            }
+        }
+    return sanitized
+}
+
+internal fun isAllowedExternalLink(link: String): Boolean {
+    val uri = runCatching { link.toUri() }.getOrNull() ?: return false
+    return uri.scheme?.lowercase() in setOf("http", "https", "mailto") &&
+        (uri.scheme.equals("mailto", ignoreCase = true) || !uri.host.isNullOrBlank())
 }
 
 private object SafeLinkResolver : LinkResolver {
@@ -119,7 +170,7 @@ private object SafeLinkResolver : LinkResolver {
 
     override fun resolve(view: View, link: String) {
         val uri = runCatching { link.toUri() }.getOrNull() ?: return
-        if (uri.scheme?.lowercase() !in allowedSchemes) return
+        if (!isAllowedExternalLink(link) || uri.scheme?.lowercase() !in allowedSchemes) return
         val intent = Intent(Intent.ACTION_VIEW, uri).apply {
             if (view.context !is Activity) addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
         }

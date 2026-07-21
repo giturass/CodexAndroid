@@ -30,6 +30,9 @@ class CodexViewModel(application: Application) : AndroidViewModel(application),
     CodexAppServerClient.Listener {
 
     private val preferences = application.getSharedPreferences("connection", 0)
+    private val pinnedThreadIds = preferences.getStringSet("pinned_threads", emptySet())
+        .orEmpty()
+        .toMutableSet()
     private val secretStore = SecretStore(application)
     private val prettyGson = GsonBuilder().setPrettyPrinting().create()
     private val client = CodexAppServerClient(this)
@@ -37,7 +40,7 @@ class CodexViewModel(application: Application) : AndroidViewModel(application),
     private val mainHandler = Handler(Looper.getMainLooper())
     private var pendingPrompt: PendingPrompt? = null
     private var appInForeground = true
-    private var subscribedThreadId: String? = null
+    private val subscribedThreadIds = mutableSetOf<String>()
     private var manualDisconnect = false
     private var reconnectAttempt = 0
     private var resumeGeneration = 0
@@ -110,10 +113,6 @@ class CodexViewModel(application: Application) : AndroidViewModel(application),
             addInfo("Android Keystore 无法保存 Token；本次连接仍会使用当前输入。", error = true)
         }
         preferences.edit { remove("token") }
-        if (sessionChanged && uiState.currentThreadId != null && !uiState.busy) {
-            unsubscribe(uiState.currentThreadId)
-            subscribedThreadId = null
-        }
         if (sessionChanged && !uiState.busy) {
             preferences.edit {
                 remove("current_thread_id")
@@ -200,12 +199,9 @@ class CodexViewModel(application: Application) : AndroidViewModel(application),
     }
 
     fun newThread() {
-        if (uiState.busy) return
         pendingDeltas.clear()
         fileChangePatches.clear()
         turnDiffs.clear()
-        unsubscribe(uiState.currentThreadId)
-        subscribedThreadId = null
         preferences.edit {
             remove("current_thread_id")
             remove("current_thread_title")
@@ -215,8 +211,47 @@ class CodexViewModel(application: Application) : AndroidViewModel(application),
             currentThreadId = null,
             currentThreadTitle = "新会话",
             activeTurnId = null,
+            busy = false,
             pendingActions = emptyList(),
             historyNextCursor = null,
+        )
+        if (client.isReady()) refreshThreads()
+    }
+
+    fun renameThread(threadId: String, name: String) {
+        val normalizedName = name.trim()
+        if (threadId.isBlank() || normalizedName.isBlank() || !client.isReady()) return
+        client.request(CodexProtocol.ClientRequest.THREAD_SET_NAME, JsonObject().apply {
+            addProperty("threadId", threadId)
+            addProperty("name", normalizedName)
+        }) { response ->
+            response.error?.let {
+                addInfo("重命名会话失败：${rpcError(it)}", error = true)
+                return@request
+            }
+            uiState = uiState.copy(
+                currentThreadTitle = if (threadId == uiState.currentThreadId) {
+                    normalizedName
+                } else {
+                    uiState.currentThreadTitle
+                },
+                threads = uiState.threads.map { thread ->
+                    if (thread.id == threadId) thread.copy(title = normalizedName) else thread
+                },
+            )
+            if (threadId == uiState.currentThreadId) {
+                preferences.edit { putString("current_thread_title", normalizedName) }
+            }
+        }
+    }
+
+    fun toggleThreadPinned(threadId: String) {
+        if (threadId in pinnedThreadIds) pinnedThreadIds.remove(threadId) else pinnedThreadIds.add(threadId)
+        preferences.edit { putStringSet("pinned_threads", pinnedThreadIds.toSet()) }
+        uiState = uiState.copy(
+            threads = sortThreads(uiState.threads.map { thread ->
+                if (thread.id == threadId) thread.copy(pinned = threadId in pinnedThreadIds) else thread
+            })
         )
     }
 
@@ -243,28 +278,36 @@ class CodexViewModel(application: Application) : AndroidViewModel(application),
 
     private fun removeDeletedThread(threadId: String) {
         if (uiState.currentThreadId == threadId) {
-            resumeGeneration++
-            subscribedThreadId = null
-            CodexConnectionService.stop(getApplication())
-            notifier.cancelPendingAction()
-            preferences.edit {
-                remove("current_thread_id")
-                remove("current_thread_title")
-            }
-            uiState = uiState.copy(
-                threads = uiState.threads.filterNot { it.id == threadId },
-                messages = emptyList(),
-                currentThreadId = null,
-                currentThreadTitle = "新会话",
-                activeTurnId = null,
-                busy = false,
-                pendingActions = emptyList(),
-                historyNextCursor = null,
-                historyLoading = false,
-            )
+            clearCurrentThreadSelection()
+            uiState = uiState.copy(threads = uiState.threads.filterNot { it.id == threadId })
         } else {
             uiState = uiState.copy(threads = uiState.threads.filterNot { it.id == threadId })
         }
+        if (pinnedThreadIds.remove(threadId)) {
+            preferences.edit { putStringSet("pinned_threads", pinnedThreadIds.toSet()) }
+        }
+    }
+
+    private fun clearCurrentThreadSelection() {
+        val threadId = uiState.currentThreadId
+        resumeGeneration++
+        threadId?.let(subscribedThreadIds::remove)
+        CodexConnectionService.stop(getApplication())
+        notifier.cancelPendingAction()
+        preferences.edit {
+            remove("current_thread_id")
+            remove("current_thread_title")
+        }
+        uiState = uiState.copy(
+            messages = emptyList(),
+            currentThreadId = null,
+            currentThreadTitle = "新会话",
+            activeTurnId = null,
+            busy = false,
+            pendingActions = emptyList(),
+            historyNextCursor = null,
+            historyLoading = false,
+        )
     }
 
     fun refreshThreads() {
@@ -307,6 +350,8 @@ class CodexViewModel(application: Application) : AndroidViewModel(application),
                     title = preview.lineSequence().firstOrNull()?.take(56) ?: "未命名会话",
                     cwd = thread.string("cwd") ?: "",
                     updatedAt = thread.long("updatedAt") ?: thread.long("createdAt") ?: 0L,
+                    active = thread.getAsJsonObject("status")?.string("type") == "active",
+                    pinned = id in pinnedThreadIds,
                 )
             }
             val threads = (accumulated + page).distinctBy { it.id }
@@ -321,10 +366,16 @@ class CodexViewModel(application: Application) : AndroidViewModel(application),
                     visitedCursors + nextCursor,
                 )
             } else {
-                uiState = uiState.copy(threads = threads)
+                uiState = uiState.copy(threads = sortThreads(threads))
             }
         }
     }
+
+    private fun sortThreads(threads: List<ThreadSummary>): List<ThreadSummary> =
+        threads.sortedWith(
+            compareByDescending<ThreadSummary> { it.pinned }
+                .thenByDescending { it.updatedAt }
+        )
 
     fun refreshModels() {
         if (!client.isReady()) {
@@ -428,7 +479,7 @@ class CodexViewModel(application: Application) : AndroidViewModel(application),
     }
 
     fun openThread(threadId: String) {
-        if (!client.isReady() || uiState.busy) return
+        if (!client.isReady()) return
         resumeThread(threadId)
     }
 
@@ -460,14 +511,12 @@ class CodexViewModel(application: Application) : AndroidViewModel(application),
                 ?: thread.string("preview")
                 ?: "Codex 会话"
             val threadActive = thread.getAsJsonObject("status")?.string("type") == "active"
-            val previousThreadId = subscribedThreadId
             val resolvedThreadId = thread.string("id") ?: threadId
             loadInitialThreadHistory(
                 generation = generation,
                 resolvedThreadId = resolvedThreadId,
                 title = title,
                 threadActive = threadActive,
-                previousThreadId = previousThreadId,
                 fallbackTurns = thread.getAsJsonArray("turns") ?: JsonArray(),
             )
         }
@@ -478,7 +527,6 @@ class CodexViewModel(application: Application) : AndroidViewModel(application),
         resolvedThreadId: String,
         title: String,
         threadActive: Boolean,
-        previousThreadId: String?,
         fallbackTurns: JsonArray,
     ) {
         client.request(CodexProtocol.ClientRequest.THREAD_TURNS_LIST, JsonObject().apply {
@@ -522,10 +570,7 @@ class CodexViewModel(application: Application) : AndroidViewModel(application),
                 } else {
                     CodexConnectionService.stop(getApplication())
                 }
-                subscribedThreadId = resolvedThreadId
-                if (previousThreadId != null && previousThreadId != subscribedThreadId) {
-                    unsubscribe(previousThreadId)
-                }
+                subscribedThreadIds += resolvedThreadId
             }
         }
     }
@@ -568,11 +613,12 @@ class CodexViewModel(application: Application) : AndroidViewModel(application),
 
     fun sendPrompt(text: String): Boolean {
         val prompt = text.trim()
-        if (prompt.isBlank() || uiState.busy) return false
+        if (prompt.isBlank()) return false
         if (!client.isReady()) {
             addInfo("请先连接 Termux 中的 Codex App Server。", error = true)
             return false
         }
+        if (uiState.busy) return steerTurn(prompt)
         if (uiState.selectedSkillPaths.isNotEmpty()) {
             val loadedSkillPaths = uiState.availableSkills.mapTo(mutableSetOf()) { it.path }
             val missingSkillPaths = uiState.selectedSkillPaths - loadedSkillPaths
@@ -591,6 +637,7 @@ class CodexViewModel(application: Application) : AndroidViewModel(application),
                 id = localMessageId,
                 kind = MessageKind.USER,
                 text = prompt,
+                running = true,
             ),
             busy = true,
         )
@@ -602,6 +649,39 @@ class CodexViewModel(application: Application) : AndroidViewModel(application),
             startThread()
         } else {
             startTurn(threadId, prompt, localMessageId)
+        }
+        return true
+    }
+
+    private fun steerTurn(prompt: String): Boolean {
+        val threadId = uiState.currentThreadId ?: return false
+        val turnId = uiState.activeTurnId ?: run {
+            addInfo("任务仍在启动，暂时无法追加指令。")
+            return false
+        }
+        val localMessageId = "local-steer-${UUID.randomUUID()}"
+        uiState = uiState.copy(
+            messages = uiState.messages + UiMessage(
+                id = localMessageId,
+                kind = MessageKind.USER,
+                text = prompt,
+                running = true,
+            )
+        )
+        client.request(CodexProtocol.ClientRequest.TURN_STEER, JsonObject().apply {
+            addProperty("threadId", threadId)
+            addProperty("expectedTurnId", turnId)
+            add("input", JsonArray().apply {
+                add(JsonObject().apply {
+                    addProperty("type", "text")
+                    addProperty("text", prompt)
+                })
+            })
+        }) { response ->
+            response.error?.let {
+                removeMessage(localMessageId)
+                addInfo("追加指令失败：${rpcError(it)}", error = true)
+            }
         }
         return true
     }
@@ -638,7 +718,10 @@ class CodexViewModel(application: Application) : AndroidViewModel(application),
 
             PendingKind.PERMISSION -> {
                 if (decision == "decline" || decision == "cancel") {
-                    client.respondError(pending.requestId, -32000, "User denied permission request")
+                    client.respond(pending.requestId, JsonObject().apply {
+                        add("permissions", JsonObject())
+                        addProperty("scope", "turn")
+                    })
                 } else {
                     val requested = pending.rawParams.getAsJsonObject("permissions") ?: JsonObject()
                     client.respond(pending.requestId, JsonObject().apply {
@@ -724,11 +807,10 @@ class CodexViewModel(application: Application) : AndroidViewModel(application),
                 addProperty("action", "cancel")
             })
 
-            PendingKind.PERMISSION -> client.respondError(
-                pending.requestId,
-                -32000,
-                "User dismissed permission request",
-            )
+            PendingKind.PERMISSION -> client.respond(pending.requestId, JsonObject().apply {
+                add("permissions", JsonObject())
+                addProperty("scope", "turn")
+            })
         }
         removePending(pending.requestId)
     }
@@ -787,6 +869,22 @@ class CodexViewModel(application: Application) : AndroidViewModel(application),
     override fun onNotification(method: String, params: JsonObject) {
         val eventThreadId = params.string("threadId")
         val threadScoped = eventThreadId != null
+        if (threadScoped && eventThreadId != uiState.currentThreadId &&
+            method in BACKGROUND_STATUS_EVENTS
+        ) {
+            val active = when (method) {
+                CodexProtocol.Notification.TURN_STARTED -> true
+                CodexProtocol.Notification.TURN_COMPLETED -> false
+                else -> params.getAsJsonObject("status")?.string("type") == "active"
+            }
+            uiState = uiState.copy(
+                threads = uiState.threads.map { thread ->
+                    if (thread.id == eventThreadId) thread.copy(active = active) else thread
+                }
+            )
+            if (!active) refreshThreads()
+            return
+        }
         if (threadScoped && eventThreadId != uiState.currentThreadId && method !in GLOBAL_THREAD_EVENTS) {
             return
         }
@@ -807,6 +905,13 @@ class CodexViewModel(application: Application) : AndroidViewModel(application),
                 uiState = uiState.copy(
                     activeTurnId = null,
                     busy = false,
+                    messages = uiState.messages.map { message ->
+                        if (message.kind == MessageKind.USER && message.running) {
+                            message.copy(running = false)
+                        } else {
+                            message
+                        }
+                    },
                 )
                 CodexConnectionService.stop(getApplication())
                 if (status == "failed") {
@@ -892,6 +997,16 @@ class CodexViewModel(application: Application) : AndroidViewModel(application),
             "thread/deleted" -> {
                 params.string("threadId")?.let(::removeDeletedThread)
             }
+
+            "thread/archived" -> {
+                val threadId = params.string("threadId")
+                if (threadId != null && threadId == uiState.currentThreadId) {
+                    clearCurrentThreadSelection()
+                }
+                refreshThreads()
+            }
+
+            "thread/unarchived" -> refreshThreads()
 
             CodexProtocol.Notification.SERVER_REQUEST_RESOLVED -> {
                 params.get("requestId")?.let(::removePending)
@@ -996,13 +1111,6 @@ class CodexViewModel(application: Application) : AndroidViewModel(application),
                 )
             }
 
-            CodexProtocol.ServerRequest.CURRENT_TIME -> {
-                client.respond(request.id, JsonObject().apply {
-                    addProperty("currentTimeAt", System.currentTimeMillis() / 1000L)
-                })
-                null
-            }
-
             CodexProtocol.ServerRequest.LEGACY_PATCH_APPROVAL -> PendingAction(
                 requestId = request.id,
                 kind = PendingKind.FILE_CHANGE,
@@ -1083,7 +1191,7 @@ class CodexViewModel(application: Application) : AndroidViewModel(application),
                 putString("current_thread_id", threadId)
                 putString("current_thread_title", uiState.currentThreadTitle)
             }
-            subscribedThreadId = threadId
+            subscribedThreadIds += threadId
             pendingPrompt?.let { pending ->
                 pendingPrompt = null
                 startTurn(threadId, pending.text, pending.messageId)
@@ -1308,7 +1416,8 @@ class CodexViewModel(application: Application) : AndroidViewModel(application),
                     else -> "文件修改完成"
                 },
                 text = boundedText(
-                    item.get("changes")?.let(prettyGson::toJson) ?: "等待修改信息…",
+                    formatFileChanges(item.getAsJsonArray("changes"))
+                        .ifBlank { "等待修改信息…" },
                     MAX_PATCH_CHARS,
                 ),
                 running = running,
@@ -1442,7 +1551,7 @@ class CodexViewModel(application: Application) : AndroidViewModel(application),
                         kind = MessageKind.TOOL,
                         title = "文件修改",
                         text = boundedText(
-                            item.get("changes")?.let(prettyGson::toJson) ?: "",
+                            formatFileChanges(item.getAsJsonArray("changes")),
                             MAX_PATCH_CHARS,
                         ),
                         outcome = if (item.string("status") == "failed") {
@@ -1706,15 +1815,6 @@ class CodexViewModel(application: Application) : AndroidViewModel(application),
         }
     }
 
-    private fun unsubscribe(threadId: String?) {
-        threadId ?: return
-        if (!client.isReady()) return
-        client.request(
-            CodexProtocol.ClientRequest.THREAD_UNSUBSCRIBE,
-            JsonObject().apply { addProperty("threadId", threadId) },
-        )
-    }
-
     private fun loadAndMigrateToken(): String {
         val encrypted = secretStore.getTransportToken()
         if (encrypted.isNotBlank()) return encrypted
@@ -1760,6 +1860,11 @@ class CodexViewModel(application: Application) : AndroidViewModel(application),
             "thread/deleted",
             "thread/unarchived",
             "thread/closed",
+        )
+        val BACKGROUND_STATUS_EVENTS = setOf(
+            "turn/started",
+            "turn/completed",
+            "thread/status/changed",
         )
         val RECONNECT_TOKEN = Any()
     }

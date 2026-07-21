@@ -29,6 +29,8 @@ data class ThreadSummary(
     val title: String,
     val cwd: String,
     val updatedAt: Long,
+    val active: Boolean = false,
+    val pinned: Boolean = false,
 )
 
 data class CodexModel(
@@ -114,5 +116,12 @@ data class AppUiState(
     val historyLoading: Boolean = false,
 ) {
     val pendingAction: PendingAction?
-        get() = pendingActions.firstOrNull()
+        get() = pendingActions.firstOrNull {
+            it.threadId == null || it.threadId == currentThreadId
+        }
+
+    val backgroundPendingAction: PendingAction?
+        get() = pendingActions.firstOrNull {
+            it.threadId != null && it.threadId != currentThreadId
+        }
 }

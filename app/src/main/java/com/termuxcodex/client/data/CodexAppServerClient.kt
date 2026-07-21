@@ -79,11 +79,12 @@ class CodexAppServerClient(private val listener: Listener) {
                 if (webSocket !== candidate) return
                 val params = JsonObject().apply {
                     add("clientInfo", JsonObject().apply {
-                        addProperty("name", "termux_codex_android")
-                        addProperty("title", "Codex Android")
+                        addProperty("name", "codex_cli_rs")
+                        addProperty("title", "Codex CLI")
                         addProperty("version", BuildConfig.VERSION_NAME)
                     })
                     add("capabilities", JsonObject().apply {
+                        addProperty("experimentalApi", true)
                         addProperty("mcpServerOpenaiFormElicitation", true)
                     })
                 }

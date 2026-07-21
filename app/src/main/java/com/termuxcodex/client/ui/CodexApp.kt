@@ -8,11 +8,18 @@ import android.os.Build
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
@@ -28,6 +35,7 @@ import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
@@ -49,6 +57,7 @@ import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material.icons.rounded.Code
 import androidx.compose.material.icons.rounded.ContentCopy
 import androidx.compose.material.icons.rounded.Delete
+import androidx.compose.material.icons.rounded.Edit
 import androidx.compose.material.icons.rounded.ErrorOutline
 import androidx.compose.material.icons.rounded.ExpandLess
 import androidx.compose.material.icons.rounded.ExpandMore
@@ -57,6 +66,8 @@ import androidx.compose.material.icons.rounded.Folder
 import androidx.compose.material.icons.rounded.History
 import androidx.compose.material.icons.rounded.Info
 import androidx.compose.material.icons.rounded.Menu
+import androidx.compose.material.icons.rounded.MoreVert
+import androidx.compose.material.icons.rounded.PushPin
 import androidx.compose.material.icons.rounded.PlayArrow
 import androidx.compose.material.icons.rounded.Refresh
 import androidx.compose.material.icons.rounded.Search
@@ -71,6 +82,7 @@ import androidx.compose.material3.CenterAlignedTopAppBar
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DrawerValue
 import androidx.compose.material3.ElevatedCard
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -81,6 +93,7 @@ import androidx.compose.material3.FilledIconButton
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalDrawerSheet
@@ -110,14 +123,20 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.ClipEntry
 import androidx.compose.ui.platform.LocalClipboard
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.text.rememberTextMeasurer
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Constraints
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.net.toUri
@@ -147,75 +166,77 @@ fun CodexApp(viewModel: CodexViewModel) {
     var showSearch by remember { mutableStateOf(false) }
     var scrollToMessageId by remember { mutableStateOf<String?>(null) }
     var threadToDelete by remember { mutableStateOf<ThreadSummary?>(null) }
+    var threadToRename by remember { mutableStateOf<ThreadSummary?>(null) }
 
-    ModalNavigationDrawer(
-        drawerState = drawerState,
-        gesturesEnabled = drawerState.isOpen,
-        drawerContent = {
-            ConversationDrawer(
-                state = state,
-                formatTime = viewModel::formatThreadTime,
-                onNewThread = {
-                    viewModel.newThread()
-                    scope.launch { drawerState.close() }
-                },
-                onOpenThread = {
-                    viewModel.openThread(it)
-                    scope.launch { drawerState.close() }
-                },
-                onDeleteThread = { threadToDelete = it },
-                onRefresh = viewModel::refreshThreads,
-                onSettings = {
-                    showSettings = true
-                    scope.launch { drawerState.close() }
-                },
-            )
-        },
-    ) {
-        Scaffold(
-            contentWindowInsets = WindowInsets.safeDrawing,
-            topBar = {
-                CenterAlignedTopAppBar(
-                    title = {
-                        Text(
-                            text = state.currentThreadTitle,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
-                            style = MaterialTheme.typography.titleMedium,
-                        )
-                    },
-                    navigationIcon = {
-                        IconButton(onClick = { scope.launch { drawerState.open() } }) {
-                            Icon(Icons.Rounded.Menu, contentDescription = "会话记录")
-                        }
-                    },
-                    actions = {
-                        IconButton(onClick = { showSearch = true }) {
-                            Icon(Icons.Rounded.Search, contentDescription = "搜索")
-                        }
-                    },
-                    colors = TopAppBarDefaults.topAppBarColors(
-                        containerColor = MaterialTheme.colorScheme.surface,
-                    ),
+    BoxWithConstraints(Modifier.fillMaxSize()) {
+        val dualPane = maxWidth >= 840.dp
+        val drawerCallbacks = DrawerCallbacks(
+            onNewThread = viewModel::newThread,
+            onOpenThread = viewModel::openThread,
+            onRenameThread = { threadToRename = it },
+            onTogglePinned = viewModel::toggleThreadPinned,
+            onDeleteThread = { threadToDelete = it },
+            onRefresh = { viewModel.refreshThreads() },
+            onSettings = { showSettings = true },
+        )
+        if (dualPane) {
+            Row(Modifier.fillMaxSize()) {
+                ConversationDrawer(
+                    state = state,
+                    formatTime = viewModel::formatThreadTime,
+                    callbacks = drawerCallbacks,
+                    permanent = true,
+                    modifier = Modifier.width(320.dp),
                 )
-            },
-            bottomBar = {
-                PromptBar(
-                    connected = state.connectionStatus == ConnectionStatus.CONNECTED,
-                    busy = state.busy,
+                ConversationScaffold(
+                    state = state,
+                    showNavigationIcon = false,
+                    onOpenDrawer = {},
+                    onSearch = { showSearch = true },
+                    onOpenThread = viewModel::openThread,
                     onSend = viewModel::sendPrompt,
                     onStop = viewModel::interruptTurn,
-                )
-            },
-        ) { padding ->
-            key(state.currentThreadId) {
-                ConversationContent(
-                    state = state,
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .padding(padding),
                     onConnect = viewModel::connect,
-                    onSuggestion = { viewModel.sendPrompt(it) },
+                    onLoadOlder = viewModel::loadOlderHistory,
+                    scrollToMessageId = scrollToMessageId,
+                    onSearchScrollHandled = { scrollToMessageId = null },
+                    modifier = Modifier.weight(1f),
+                )
+            }
+        } else {
+            ModalNavigationDrawer(
+                drawerState = drawerState,
+                gesturesEnabled = true,
+                drawerContent = {
+                    ConversationDrawer(
+                        state = state,
+                        formatTime = viewModel::formatThreadTime,
+                        callbacks = drawerCallbacks.copy(
+                            onNewThread = {
+                                viewModel.newThread()
+                                scope.launch { drawerState.close() }
+                            },
+                            onOpenThread = {
+                                viewModel.openThread(it)
+                                scope.launch { drawerState.close() }
+                            },
+                            onSettings = {
+                                showSettings = true
+                                scope.launch { drawerState.close() }
+                            },
+                        ),
+                    )
+                },
+            ) {
+                ConversationScaffold(
+                    state = state,
+                    showNavigationIcon = true,
+                    onOpenDrawer = { scope.launch { drawerState.open() } },
+                    onSearch = { showSearch = true },
+                    onOpenThread = viewModel::openThread,
+                    onSend = viewModel::sendPrompt,
+                    onStop = viewModel::interruptTurn,
+                    onConnect = viewModel::connect,
                     onLoadOlder = viewModel::loadOlderHistory,
                     scrollToMessageId = scrollToMessageId,
                     onSearchScrollHandled = { scrollToMessageId = null },
@@ -279,6 +300,17 @@ fun CodexApp(viewModel: CodexViewModel) {
         )
     }
 
+    threadToRename?.let { thread ->
+        RenameThreadDialog(
+            thread = thread,
+            onDismiss = { threadToRename = null },
+            onRename = { name ->
+                viewModel.renameThread(thread.id, name)
+                threadToRename = null
+            },
+        )
+    }
+
     state.pendingAction?.let { pending ->
         if (pending.kind == PendingKind.USER_INPUT ||
             (pending.kind == PendingKind.MCP_ELICITATION && pending.questions.isNotEmpty())
@@ -298,61 +330,232 @@ fun CodexApp(viewModel: CodexViewModel) {
     }
 }
 
+private data class DrawerCallbacks(
+    val onNewThread: () -> Unit,
+    val onOpenThread: (String) -> Unit,
+    val onRenameThread: (ThreadSummary) -> Unit,
+    val onTogglePinned: (String) -> Unit,
+    val onDeleteThread: (ThreadSummary) -> Unit,
+    val onRefresh: () -> Unit,
+    val onSettings: () -> Unit,
+)
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun ConversationScaffold(
+    state: AppUiState,
+    showNavigationIcon: Boolean,
+    onOpenDrawer: () -> Unit,
+    onSearch: () -> Unit,
+    onOpenThread: (String) -> Unit,
+    onSend: (String) -> Boolean,
+    onStop: () -> Unit,
+    onConnect: () -> Unit,
+    onLoadOlder: () -> Unit,
+    scrollToMessageId: String?,
+    onSearchScrollHandled: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    Scaffold(
+        modifier = modifier,
+        contentWindowInsets = WindowInsets.safeDrawing,
+        topBar = {
+            CenterAlignedTopAppBar(
+                title = {
+                    Text(
+                        text = state.currentThreadTitle,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        style = MaterialTheme.typography.titleMedium,
+                    )
+                },
+                navigationIcon = {
+                    if (showNavigationIcon) {
+                        IconButton(onClick = onOpenDrawer) {
+                            Icon(Icons.Rounded.Menu, contentDescription = "会话记录")
+                        }
+                    }
+                },
+                actions = {
+                    IconButton(onClick = onSearch) {
+                        Icon(Icons.Rounded.Search, contentDescription = "搜索")
+                    }
+                },
+                colors = TopAppBarDefaults.topAppBarColors(
+                    containerColor = MaterialTheme.colorScheme.surface,
+                ),
+            )
+        },
+        bottomBar = {
+            PromptBar(
+                connected = state.connectionStatus == ConnectionStatus.CONNECTED,
+                busy = state.busy,
+                onSend = onSend,
+                onStop = onStop,
+            )
+        },
+    ) { padding ->
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(padding),
+        ) {
+            state.backgroundPendingAction?.let { pending ->
+                PendingThreadBanner(
+                    pending = pending,
+                    onOpen = { pending.threadId?.let(onOpenThread) },
+                )
+            }
+            key(state.currentThreadId) {
+                ConversationContent(
+                    state = state,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .weight(1f),
+                    onConnect = onConnect,
+                    onSuggestion = { onSend(it) },
+                    onLoadOlder = onLoadOlder,
+                    scrollToMessageId = scrollToMessageId,
+                    onSearchScrollHandled = onSearchScrollHandled,
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun PendingThreadBanner(
+    pending: PendingAction,
+    onOpen: () -> Unit,
+) {
+    Surface(
+        onClick = onOpen,
+        color = MaterialTheme.colorScheme.tertiaryContainer,
+        contentColor = MaterialTheme.colorScheme.onTertiaryContainer,
+        shape = RoundedCornerShape(14.dp),
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 12.dp, vertical = 8.dp),
+    ) {
+        Row(
+            modifier = Modifier.padding(horizontal = 14.dp, vertical = 12.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Icon(Icons.Rounded.Info, contentDescription = null)
+            Spacer(Modifier.width(10.dp))
+            Column(Modifier.weight(1f)) {
+                Text(pending.title, style = MaterialTheme.typography.labelLarge)
+                Text("另一个会话正在等待处理，点击前往", style = MaterialTheme.typography.bodySmall)
+            }
+            Icon(Icons.Rounded.ArrowUpward, contentDescription = "前往对应会话")
+        }
+    }
+}
+
 @Composable
 private fun ConversationDrawer(
     state: AppUiState,
     formatTime: (Long) -> String,
-    onNewThread: () -> Unit,
-    onOpenThread: (String) -> Unit,
-    onDeleteThread: (ThreadSummary) -> Unit,
-    onRefresh: () -> Unit,
-    onSettings: () -> Unit,
+    callbacks: DrawerCallbacks,
+    permanent: Boolean = false,
+    modifier: Modifier = Modifier,
 ) {
-    ModalDrawerSheet(modifier = Modifier.widthIn(max = 336.dp)) {
+    val content: @Composable () -> Unit = {
         Column(
             modifier = Modifier
                 .fillMaxHeight()
+                .statusBarsPadding()
+                .navigationBarsPadding()
                 .padding(horizontal = 12.dp),
         ) {
-            Spacer(Modifier.height(16.dp))
-            Row(
+            Spacer(Modifier.height(12.dp))
+            Surface(
+                color = MaterialTheme.colorScheme.surfaceContainerLow,
+                shape = RoundedCornerShape(10.dp),
+                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.65f)),
+                tonalElevation = 0.dp,
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(horizontal = 12.dp, vertical = 8.dp),
-                verticalAlignment = Alignment.CenterVertically,
+                    .padding(vertical = 4.dp),
             ) {
-                Surface(
-                    shape = RoundedCornerShape(12.dp),
-                    color = MaterialTheme.colorScheme.primaryContainer,
-                    modifier = Modifier.size(44.dp),
+                Row(
+                    modifier = Modifier.padding(start = 14.dp, top = 12.dp, bottom = 12.dp, end = 6.dp),
+                    verticalAlignment = Alignment.CenterVertically,
                 ) {
-                    Box(contentAlignment = Alignment.Center) {
-                        Icon(Icons.Rounded.Terminal, contentDescription = null)
+                    Surface(
+                        shape = RoundedCornerShape(8.dp),
+                        color = MaterialTheme.colorScheme.primaryContainer,
+                        modifier = Modifier.size(46.dp),
+                    ) {
+                        Box(contentAlignment = Alignment.Center) {
+                            Icon(
+                                Icons.Rounded.Terminal,
+                                contentDescription = null,
+                                modifier = Modifier.size(30.dp),
+                            )
+                        }
                     }
-                }
-                Spacer(Modifier.width(12.dp))
-                Column(Modifier.weight(1f)) {
-                    Text("Codex Android", style = MaterialTheme.typography.titleMedium)
-                    Text(
-                        state.endpoint,
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                    )
-                }
-                IconButton(onClick = onRefresh) {
-                    Icon(Icons.Rounded.Refresh, contentDescription = "刷新会话")
+                    Spacer(Modifier.width(12.dp))
+                    Column(Modifier.weight(1f)) {
+                        Text("Codex Android", style = MaterialTheme.typography.titleSmall)
+                        Text(
+                            state.endpoint,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Box(
+                                modifier = Modifier
+                                    .size(7.dp)
+                                    .clip(CircleShape)
+                                    .background(
+                                        when (state.connectionStatus) {
+                                            ConnectionStatus.CONNECTED -> Color(0xFF2DA44E)
+                                            ConnectionStatus.CONNECTING -> MaterialTheme.colorScheme.primary
+                                            ConnectionStatus.DISCONNECTED -> MaterialTheme.colorScheme.error
+                                        }
+                                    )
+                            )
+                            Spacer(Modifier.width(6.dp))
+                            Text(
+                                when (state.connectionStatus) {
+                                    ConnectionStatus.CONNECTED -> "已连接"
+                                    ConnectionStatus.CONNECTING -> "正在连接"
+                                    ConnectionStatus.DISCONNECTED -> "未连接"
+                                },
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                    }
+                    IconButton(onClick = callbacks.onRefresh) {
+                        Icon(Icons.Rounded.Refresh, contentDescription = "刷新会话")
+                    }
                 }
             }
 
-            NavigationDrawerItem(
-                label = { Text("新会话") },
-                selected = state.currentThreadId == null,
-                onClick = onNewThread,
-                icon = { Icon(Icons.Rounded.Add, contentDescription = null) },
-                modifier = Modifier.padding(vertical = 4.dp),
-            )
+            Surface(
+                onClick = callbacks.onNewThread,
+                color = MaterialTheme.colorScheme.primary,
+                contentColor = MaterialTheme.colorScheme.onPrimary,
+                shape = RoundedCornerShape(10.dp),
+                shadowElevation = 2.dp,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(top = 8.dp, bottom = 4.dp),
+            ) {
+                Row(
+                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.Center,
+                ) {
+                    Icon(Icons.Rounded.Add, contentDescription = null, modifier = Modifier.size(20.dp))
+                    Spacer(Modifier.width(8.dp))
+                    Text("新会话", style = MaterialTheme.typography.labelLarge)
+                }
+            }
 
             Row(
                 modifier = Modifier
@@ -375,29 +578,47 @@ private fun ConversationDrawer(
 
             LazyColumn(
                 modifier = Modifier.weight(1f),
-                verticalArrangement = Arrangement.spacedBy(2.dp),
+                verticalArrangement = Arrangement.spacedBy(4.dp),
             ) {
                 items(state.threads, key = { it.id }) { thread ->
                     ThreadDrawerItem(
                         thread = thread,
                         selected = thread.id == state.currentThreadId,
+                        running = thread.active ||
+                            (thread.id == state.currentThreadId && state.busy),
+                        pendingCount = state.pendingActions.count { it.threadId == thread.id },
                         time = formatTime(thread.updatedAt),
-                        onClick = { onOpenThread(thread.id) },
-                        onDelete = { onDeleteThread(thread) },
+                        onClick = { callbacks.onOpenThread(thread.id) },
+                        onRename = { callbacks.onRenameThread(thread) },
+                        onTogglePinned = { callbacks.onTogglePinned(thread.id) },
+                        onDelete = { callbacks.onDeleteThread(thread) },
                         deleteEnabled = !state.busy || thread.id != state.currentThreadId,
                     )
                 }
             }
 
+            HorizontalDivider(
+                modifier = Modifier.padding(top = 6.dp),
+                color = MaterialTheme.colorScheme.outlineVariant,
+            )
+
             NavigationDrawerItem(
                 label = { Text("设置") },
                 selected = false,
-                onClick = onSettings,
+                onClick = callbacks.onSettings,
                 icon = { Icon(Icons.Rounded.Settings, contentDescription = null) },
                 modifier = Modifier.padding(vertical = 8.dp),
             )
-
         }
+    }
+    if (permanent) {
+        Surface(
+            modifier = modifier.fillMaxHeight(),
+            color = MaterialTheme.colorScheme.surfaceContainerLow,
+            tonalElevation = 2.dp,
+        ) { content() }
+    } else {
+        ModalDrawerSheet(modifier = modifier.widthIn(max = 336.dp)) { content() }
     }
 }
 
@@ -405,14 +626,46 @@ private fun ConversationDrawer(
 private fun ThreadDrawerItem(
     thread: ThreadSummary,
     selected: Boolean,
+    running: Boolean,
+    pendingCount: Int,
     time: String,
     onClick: () -> Unit,
+    onRename: () -> Unit,
+    onTogglePinned: () -> Unit,
     onDelete: () -> Unit,
     deleteEnabled: Boolean,
 ) {
-    NavigationDrawerItem(
-        label = {
-            Column {
+    var menuExpanded by remember { mutableStateOf(false) }
+    Surface(
+        onClick = onClick,
+        color = if (selected) MaterialTheme.colorScheme.secondaryContainer
+        else Color.Transparent,
+        contentColor = if (selected) MaterialTheme.colorScheme.onSecondaryContainer
+        else MaterialTheme.colorScheme.onSurface,
+        shape = RoundedCornerShape(9.dp),
+        border = if (selected) {
+            BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.24f))
+        } else {
+            null
+        },
+        tonalElevation = if (selected) 2.dp else 0.dp,
+        shadowElevation = if (selected) 1.dp else 0.dp,
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 4.dp),
+    ) {
+        Row(
+            modifier = Modifier.padding(start = 14.dp, top = 11.dp, bottom = 11.dp, end = 4.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Icon(
+                if (thread.pinned) Icons.Rounded.PushPin else Icons.Rounded.History,
+                contentDescription = null,
+                modifier = Modifier.size(19.dp),
+                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Spacer(Modifier.width(10.dp))
+            Column(Modifier.weight(1f)) {
                 Text(
                     thread.title,
                     maxLines = 2,
@@ -420,30 +673,112 @@ private fun ThreadDrawerItem(
                     style = MaterialTheme.typography.bodyMedium,
                 )
                 if (time.isNotBlank()) {
-                    Text(
-                        time,
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    ) {
+                        Text(
+                            time,
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                        if (running) {
+                            DrawerStatusPill("运行中", Color(0xFF2DA44E))
+                        }
+                        if (pendingCount > 0) {
+                            DrawerStatusPill("待处理 $pendingCount", MaterialTheme.colorScheme.primary)
+                        }
+                    }
+                }
+            }
+            Box {
+                IconButton(
+                    onClick = { menuExpanded = true },
+                    modifier = Modifier.size(36.dp),
+                ) {
+                    Icon(Icons.Rounded.MoreVert, contentDescription = "会话菜单")
+                }
+                DropdownMenu(
+                    expanded = menuExpanded,
+                    onDismissRequest = { menuExpanded = false },
+                ) {
+                    DropdownMenuItem(
+                        text = { Text("重命名") },
+                        leadingIcon = { Icon(Icons.Rounded.Edit, contentDescription = null) },
+                        onClick = {
+                            menuExpanded = false
+                            onRename()
+                        },
+                    )
+                    DropdownMenuItem(
+                        text = { Text(if (thread.pinned) "取消置顶" else "置顶") },
+                        leadingIcon = { Icon(Icons.Rounded.PushPin, contentDescription = null) },
+                        onClick = {
+                            menuExpanded = false
+                            onTogglePinned()
+                        },
+                    )
+                    DropdownMenuItem(
+                        text = { Text("删除会话") },
+                        leadingIcon = { Icon(Icons.Rounded.Delete, contentDescription = null) },
+                        enabled = deleteEnabled,
+                        onClick = {
+                            menuExpanded = false
+                            onDelete()
+                        },
                     )
                 }
             }
+        }
+    }
+}
+
+@Composable
+private fun DrawerStatusPill(text: String, color: Color) {
+    Surface(
+        color = color.copy(alpha = 0.14f),
+        contentColor = color,
+        shape = RoundedCornerShape(5.dp),
+    ) {
+        Text(
+            text,
+            modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
+            style = MaterialTheme.typography.labelSmall,
+            fontWeight = FontWeight.SemiBold,
+        )
+    }
+}
+
+@Composable
+private fun RenameThreadDialog(
+    thread: ThreadSummary,
+    onDismiss: () -> Unit,
+    onRename: (String) -> Unit,
+) {
+    var name by rememberSaveable(thread.id) { mutableStateOf(thread.title) }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        icon = { Icon(Icons.Rounded.Edit, contentDescription = null) },
+        title = { Text("重命名会话") },
+        text = {
+            OutlinedTextField(
+                value = name,
+                onValueChange = { name = it },
+                label = { Text("会话名称") },
+                singleLine = true,
+                modifier = Modifier.fillMaxWidth(),
+                keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
+                keyboardActions = KeyboardActions(onDone = {
+                    if (name.isNotBlank()) onRename(name)
+                }),
+            )
         },
-        selected = selected,
-        onClick = onClick,
-        icon = { Icon(Icons.Rounded.History, contentDescription = null) },
-        badge = {
-            IconButton(
-                onClick = onDelete,
-                enabled = deleteEnabled,
-                modifier = Modifier.size(36.dp),
-            ) {
-                Icon(
-                    Icons.Rounded.Delete,
-                    contentDescription = "删除会话",
-                    modifier = Modifier.size(18.dp),
-                )
+        confirmButton = {
+            Button(onClick = { onRename(name) }, enabled = name.isNotBlank()) {
+                Text("保存")
             }
         },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("取消") } },
     )
 }
 
@@ -702,6 +1037,28 @@ private fun MessageItem(message: UiMessage) {
                         modifier = Modifier.padding(end = 9.dp),
                         style = MaterialTheme.typography.bodyLarge,
                     )
+                    if (message.running) {
+                        val transition = rememberInfiniteTransition(label = "response-dots")
+                        val alpha by transition.animateFloat(
+                            initialValue = 0.25f,
+                            targetValue = 1f,
+                            animationSpec = infiniteRepeatable(
+                                animation = tween(650),
+                                repeatMode = RepeatMode.Reverse,
+                            ),
+                            label = "response-dots-alpha",
+                        )
+                        Text(
+                            "•••",
+                            modifier = Modifier
+                                .align(Alignment.End)
+                                .padding(top = 4.dp, end = 4.dp)
+                                .graphicsLayer { this.alpha = alpha },
+                            color = MaterialTheme.colorScheme.primary,
+                            fontWeight = FontWeight.Bold,
+                            letterSpacing = 2.sp,
+                        )
+                    }
                 }
             }
         }
@@ -758,6 +1115,15 @@ private fun MessageItem(message: UiMessage) {
 @Composable
 private fun ProcessMessageCard(message: UiMessage) {
     val isCommandOutput = message.title?.contains("命令") == true
+    val isFileChange = message.title?.contains("文件") == true ||
+        message.title?.contains("补丁") == true
+    val accent = when {
+        isFileChange -> Color(0xFF8250DF)
+        isCommandOutput -> MaterialTheme.colorScheme.primary
+        message.title?.contains("计划") == true -> Color(0xFFBF8700)
+        message.title?.contains("网页") == true -> Color(0xFF0969DA)
+        else -> MaterialTheme.colorScheme.tertiary
+    }
     var expanded by remember(message.id) { mutableStateOf(isCommandOutput) }
     var showAllOutput by remember(message.id) { mutableStateOf(false) }
     val scrollState = rememberScrollState()
@@ -781,85 +1147,84 @@ private fun ProcessMessageCard(message: UiMessage) {
             containerColor = MaterialTheme.colorScheme.surfaceContainer,
         ),
     ) {
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .clickable { expanded = !expanded }
-                .padding(14.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Icon(
-                Icons.Rounded.Code,
-                contentDescription = null,
-                tint = MaterialTheme.colorScheme.tertiary,
-                modifier = Modifier.size(18.dp),
-            )
-            Spacer(Modifier.width(8.dp))
-            Text(
-                message.title ?: "执行过程",
-                style = MaterialTheme.typography.labelLarge,
-                color = MaterialTheme.colorScheme.tertiary,
-                modifier = Modifier.weight(1f),
-            )
-            if (message.running) {
-                CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 2.dp)
-            } else if (message.outcome == MessageOutcome.FAILED ||
-                message.outcome == MessageOutcome.DECLINED
+        Column {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clickable { expanded = !expanded }
+                    .padding(14.dp),
+                verticalAlignment = Alignment.CenterVertically,
             ) {
-                Icon(
-                    Icons.Rounded.ErrorOutline,
-                    contentDescription = null,
-                    tint = MaterialTheme.colorScheme.error,
-                    modifier = Modifier.size(17.dp),
+                Text(
+                    message.title ?: "执行过程",
+                    style = MaterialTheme.typography.labelLarge,
+                    color = accent,
+                    modifier = Modifier.weight(1f),
                 )
-            } else {
+                if (message.running) {
+                    CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 2.dp)
+                } else if (message.outcome == MessageOutcome.FAILED ||
+                    message.outcome == MessageOutcome.DECLINED
+                ) {
+                    Icon(
+                        Icons.Rounded.ErrorOutline,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.error,
+                        modifier = Modifier.size(17.dp),
+                    )
+                } else {
+                    Icon(
+                        Icons.Rounded.CheckCircle,
+                        contentDescription = null,
+                        tint = Color(0xFF2DA44E),
+                        modifier = Modifier.size(17.dp),
+                    )
+                }
+                Spacer(Modifier.width(6.dp))
+                CopyTextButton(message.text, "复制执行内容")
                 Icon(
-                    Icons.Rounded.CheckCircle,
-                    contentDescription = null,
-                    tint = MaterialTheme.colorScheme.primary,
-                    modifier = Modifier.size(17.dp),
+                    if (expanded) Icons.Rounded.ExpandLess else Icons.Rounded.ExpandMore,
+                    contentDescription = if (expanded) "折叠执行过程" else "展开执行过程",
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
-            Spacer(Modifier.width(8.dp))
-            CopyTextButton(message.text, "复制执行内容")
-            Icon(
-                if (expanded) Icons.Rounded.ExpandLess else Icons.Rounded.ExpandMore,
-                contentDescription = if (expanded) "折叠执行过程" else "展开执行过程",
-                tint = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-        }
-        if (expanded && message.text.isNotBlank()) {
-            Column {
-                Box(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .heightIn(max = if (showAllOutput) 520.dp else 320.dp)
-                        .verticalScroll(scrollState)
-                        .padding(start = 14.dp, end = 14.dp, bottom = 8.dp),
-                ) {
-                    if (isCommandOutput) {
-                        androidx.compose.foundation.text.selection.SelectionContainer {
-                            Text(
-                                displayText,
-                                style = MaterialTheme.typography.bodySmall.copy(
-                                    fontFamily = FontFamily.Monospace,
-                                    lineHeight = 18.sp,
-                                ),
-                            )
-                        }
-                    } else {
-                        MarkdownText(
-                            message.text,
-                            style = MaterialTheme.typography.bodySmall.copy(
-                                fontFamily = FontFamily.Monospace,
-                                lineHeight = 18.sp,
-                            ),
+            if (expanded && message.text.isNotBlank()) {
+                Column {
+                    if (isFileChange) {
+                        DiffViewer(
+                            text = message.text,
+                            modifier = Modifier.padding(start = 14.dp, end = 14.dp, bottom = 10.dp),
                         )
+                    } else {
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .heightIn(max = if (showAllOutput) 560.dp else 360.dp)
+                                .verticalScroll(scrollState)
+                                .padding(start = 14.dp, end = 14.dp, bottom = 10.dp),
+                        ) {
+                            if (isCommandOutput) {
+                                androidx.compose.foundation.text.selection.SelectionContainer {
+                                    Text(
+                                        displayText,
+                                        style = MaterialTheme.typography.bodySmall.copy(
+                                            fontFamily = FontFamily.Monospace,
+                                            lineHeight = 18.sp,
+                                        ),
+                                    )
+                                }
+                            } else {
+                                MarkdownText(
+                                    message.text,
+                                    style = MaterialTheme.typography.bodySmall.copy(lineHeight = 18.sp),
+                                )
+                            }
+                        }
                     }
-                }
-                if (isCommandOutput && boundedText.length > MAX_COMMAND_PREVIEW_CHARS) {
-                    TextButton(onClick = { showAllOutput = !showAllOutput }) {
-                        Text(if (showAllOutput) "收起长输出" else "展开全部")
+                    if (isCommandOutput && boundedText.length > MAX_COMMAND_PREVIEW_CHARS) {
+                        TextButton(onClick = { showAllOutput = !showAllOutput }) {
+                            Text(if (showAllOutput) "收起长输出" else "展开全部")
+                        }
                     }
                 }
             }
@@ -934,6 +1299,23 @@ private fun PromptBar(
     onStop: () -> Unit,
 ) {
     var prompt by rememberSaveable { mutableStateOf("") }
+    var promptFieldWidth by remember { mutableStateOf(0) }
+    val textMeasurer = rememberTextMeasurer()
+    val promptTextStyle = MaterialTheme.typography.bodyLarge
+    val textChromeWidth = with(LocalDensity.current) { 80.dp.roundToPx() }
+    val promptLineCount = remember(prompt, promptFieldWidth, promptTextStyle, textChromeWidth) {
+        if (prompt.isEmpty() || promptFieldWidth <= textChromeWidth) {
+            1
+        } else {
+            textMeasurer.measure(
+                text = AnnotatedString(prompt),
+                style = promptTextStyle,
+                maxLines = 5,
+                constraints = Constraints(maxWidth = promptFieldWidth - textChromeWidth),
+            ).lineCount.coerceAtLeast(1)
+        }
+    }
+    val multiline = promptLineCount > 1
     Surface(
         tonalElevation = 3.dp,
         shadowElevation = 6.dp,
@@ -943,64 +1325,66 @@ private fun PromptBar(
             .imePadding(),
     ) {
         Column {
-            AnimatedVisibility(visible = busy) {
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(start = 18.dp, end = 18.dp, top = 10.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(10.dp),
-                ) {
-                    CircularProgressIndicator(
-                        modifier = Modifier.size(16.dp),
-                        strokeWidth = 2.dp,
-                    )
-                    Text(
-                        text = "任务执行中，可点击停止按钮中断",
-                        style = MaterialTheme.typography.labelMedium,
-                        color = MaterialTheme.colorScheme.primary,
-                    )
-                }
-            }
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
                     .padding(horizontal = 12.dp, vertical = 10.dp),
                 verticalAlignment = Alignment.Bottom,
             ) {
-                OutlinedTextField(
-                    value = prompt,
-                    onValueChange = { prompt = it },
-                    modifier = Modifier.weight(1f),
-                    enabled = connected && !busy,
-                    placeholder = {
-                        Text(if (connected) "给 Codex 分配任务…" else "连接后即可开始")
-                    },
-                    shape = RoundedCornerShape(24.dp),
-                    maxLines = 5,
-                    keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
-                    keyboardActions = KeyboardActions(onSend = {
-                        if (prompt.isNotBlank() && connected && !busy) {
-                            if (onSend(prompt)) prompt = ""
-                        }
-                    }),
-                )
-                Spacer(Modifier.width(10.dp))
-                FilledIconButton(
-                    onClick = {
-                        if (busy) {
-                            onStop()
-                        } else if (prompt.isNotBlank()) {
-                            if (onSend(prompt)) prompt = ""
-                        }
-                    },
-                    enabled = connected && (busy || prompt.isNotBlank()),
-                    modifier = Modifier.size(52.dp),
-                ) {
-                    Icon(
-                        if (busy) Icons.Rounded.Stop else Icons.AutoMirrored.Rounded.Send,
-                        contentDescription = if (busy) "停止任务" else "发送",
+                Box(modifier = Modifier.fillMaxWidth()) {
+                    OutlinedTextField(
+                        value = prompt,
+                        onValueChange = { prompt = it },
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .onSizeChanged { promptFieldWidth = it.width },
+                        enabled = connected,
+                        placeholder = {
+                            Text(
+                                when {
+                                    !connected -> "连接后即可开始"
+                                    busy -> "给当前任务追加指令…"
+                                    else -> "给 Codex 分配任务…"
+                                }
+                            )
+                        },
+                        shape = RoundedCornerShape(if (multiline) 24.dp else 50.dp),
+                        minLines = if (multiline) (promptLineCount + 1).coerceAtMost(6) else 1,
+                        maxLines = 6,
+                        keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
+                        keyboardActions = KeyboardActions(onSend = {
+                            if (prompt.isNotBlank() && connected) {
+                                if (onSend(prompt)) prompt = ""
+                            }
+                        }),
+                        trailingIcon = if (multiline) {
+                            null
+                        } else {
+                            { Spacer(Modifier.width(52.dp)) }
+                        },
                     )
+                    FilledIconButton(
+                        onClick = {
+                            if (busy && prompt.isBlank()) {
+                                onStop()
+                            } else if (prompt.isNotBlank()) {
+                                if (onSend(prompt)) prompt = ""
+                            }
+                        },
+                        enabled = connected && (busy || prompt.isNotBlank()),
+                        shape = CircleShape,
+                        modifier = Modifier
+                            .align(Alignment.BottomEnd)
+                            .padding(end = 4.dp, bottom = 4.dp)
+                            .size(48.dp),
+                    ) {
+                        val showStop = busy && prompt.isBlank()
+                        Icon(
+                            if (showStop) Icons.Rounded.Stop else Icons.AutoMirrored.Rounded.Send,
+                            contentDescription = if (showStop) "停止任务" else if (busy) "追加指令" else "发送",
+                            modifier = Modifier.size(24.dp),
+                        )
+                    }
                 }
             }
         }
@@ -1232,6 +1616,14 @@ private fun ConnectionSettingsDialog(
                     singleLine = true,
                     modifier = Modifier.fillMaxWidth(),
                 )
+                OutlinedTextField(
+                    value = token,
+                    onValueChange = { token = it },
+                    label = { Text("WebSocket Bearer Token（可选）") },
+                    visualTransformation = PasswordVisualTransformation(),
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth(),
+                )
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     verticalAlignment = Alignment.CenterVertically,
@@ -1242,7 +1634,7 @@ private fun ConnectionSettingsDialog(
                             cwd = it
                             cwdError = null
                         },
-                        label = { Text("Termux 工作目录") },
+                        label = { Text("工作目录") },
                         supportingText = {
                             Text(cwdError ?: "可手动输入，或通过 App Server 浏览 Termux 文件系统")
                         },
@@ -1582,14 +1974,6 @@ private fun ConnectionSettingsDialog(
                         Icon(Icons.Rounded.Refresh, contentDescription = "刷新 Skills")
                     }
                 }
-                OutlinedTextField(
-                    value = token,
-                    onValueChange = { token = it },
-                    label = { Text("WebSocket Bearer Token（可选）") },
-                    visualTransformation = PasswordVisualTransformation(),
-                    singleLine = true,
-                    modifier = Modifier.fillMaxWidth(),
-                )
                 if (!notificationGranted && Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
                     OutlinedButton(
                         onClick = {
@@ -1774,22 +2158,30 @@ private fun ApprovalDialog(
                     shape = RoundedCornerShape(12.dp),
                     modifier = Modifier.heightIn(max = 360.dp),
                 ) {
-                    androidx.compose.foundation.text.selection.SelectionContainer {
-                        Text(
-                            pending.detail.ifBlank { "Codex 请求你的批准。" },
+                    if (pending.kind == PendingKind.FILE_CHANGE) {
+                        DiffViewer(
+                            pending.detail.ifBlank { "Codex 请求应用文件修改。" },
+                            Modifier.padding(14.dp),
+                        )
+                    } else {
+                        Box(
                             modifier = Modifier
                                 .padding(14.dp)
                                 .verticalScroll(rememberScrollState()),
-                            style = MaterialTheme.typography.bodySmall.copy(
-                                fontFamily = if (pending.kind == PendingKind.COMMAND ||
-                                    pending.kind == PendingKind.FILE_CHANGE
-                                ) {
-                                    FontFamily.Monospace
-                                } else {
-                                    FontFamily.Default
-                                },
-                            ),
-                        )
+                        ) {
+                            androidx.compose.foundation.text.selection.SelectionContainer {
+                                Text(
+                                    pending.detail.ifBlank { "Codex 请求你的批准。" },
+                                    style = MaterialTheme.typography.bodySmall.copy(
+                                        fontFamily = if (pending.kind == PendingKind.COMMAND) {
+                                            FontFamily.Monospace
+                                        } else {
+                                            FontFamily.Default
+                                        },
+                                    ),
+                                )
+                            }
+                        }
                     }
                 }
                 pending.rawParams.get("url")?.takeUnless { it.isJsonNull }?.asString?.let { url ->

@@ -25,8 +25,8 @@ android {
         applicationId = "com.termuxcodex.client"
         minSdk = 26
         targetSdk = 36
-        versionCode = 2
-        versionName = "0.2.0"
+        versionCode = 3
+        versionName = "2.0.0"
     }
 
     signingConfigs {
@@ -83,6 +83,7 @@ dependencies {
     implementation("androidx.core:core-ktx:1.17.0")
     implementation("com.google.code.gson:gson:2.14.0")
     implementation("com.squareup.okhttp3:okhttp:5.4.0")
+    implementation("io.github.java-diff-utils:java-diff-utils:4.15")
     implementation("io.noties.markwon:core:4.6.2")
     implementation("io.noties.markwon:ext-strikethrough:4.6.2")
     implementation("io.noties.markwon:ext-tables:4.6.2")
