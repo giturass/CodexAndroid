@@ -5,10 +5,13 @@
 ## 功能
 
 - Material Design 3、自适应浅色/深色与动态配色
+- 跟随系统、浅色和深色三种主题模式
 - 新建、查看、恢复并永久删除本地 Codex 会话
 - 流式显示回复、计划、命令执行、文件修改和工具状态
 - 命令审批与文件 Diff 审阅
 - 运行中通过 `turn/steer` 追加指令，并可随时停止当前任务
+- 多行圆角任务输入栏、图片附件、`/` 命令、`@` 文件引用与 `$` Skill 引用
+- 输入栏快捷选择模型和思考深度
 - java-diff-utils 解析的上下合并 Diff 视图、工具执行时间线与增删行统计
 - 会话重命名和本地置顶
 - 平板与大屏横向双栏布局
@@ -18,6 +21,7 @@
 - 通过 App Server 浏览 Termux 文件系统并选择真实工作目录
 - 运行任务时使用前台服务保持连接，后台审批或用户输入时发送系统通知
 - 自定义 App Server 地址和 Bearer Token
+- 通过 App Server [`thread/list`](https://learn.chatgpt.com/docs/app-server#list-threads-with-pagination--filters) 的 `searchTerm` 参数搜索已保存会话、MCP 服务状态
 - 会话通知隔离、断线自动恢复、历史分页和流式消息批处理
 - Markwon/CommonMark Markdown 渲染、表格、任务列表与安全外链
 - OkHttp WebSocket 心跳、请求超时和只读请求过载重试
@@ -37,7 +41,7 @@ codex login
 codex app-server --listen ws://127.0.0.1:4500
 ```
 
-需要保持设备唤醒时，可在启动前单独运行 `termux-wake-lock`。使用只兼容 Responses API、但没有 `/alpha/search` 路由的第三方 Provider 时，应让 Codex 使用 Responses API 的托管网页搜索工具：
+需要保持设备唤醒时，可在启动前单独运行 `termux-wake-lock`。如果 Provider 使用 Responses API 并支持托管网页搜索，可按官方配置参考启用 Responses wire API 和实时网页搜索：
 
 ```toml
 model_provider = "proxy"
@@ -47,10 +51,10 @@ web_search = "live"
 name = "Responses Proxy"
 base_url = "https://your-provider.example/v1"
 wire_api = "responses"
-requires_openai_auth = true
+env_key = "PROXY_API_KEY"
 ```
 
-Provider 的 `name` 不要设置成 `OpenAI`；当前 Codex 会把该名称视为 OpenAI Provider 并启用独立的 `/alpha/search` 客户端。代理服务还必须在 Responses API 中支持 `type = "web_search"`。
+`env_key` 用于从环境变量读取该 Provider 自己的 API key。只有代理明确要求使用 ChatGPT/OpenAI 鉴权时才配置 `requires_openai_auth = true`；官方说明启用该选项后会忽略 `env_key`。Provider 的具体能力和鉴权方式应以其服务文档为准。
 
 如需 WebSocket 鉴权，请使用 Codex CLI 官方的 `--ws-auth capability-token --ws-token-file /absolute/path` 参数，并把同一 Token 填入客户端设置。这个 Token 只用于 Android 客户端到 Codex CLI 的传输鉴权，不是 Codex 登录凭证、OpenAI API Key 或 Codex Access Token。
 

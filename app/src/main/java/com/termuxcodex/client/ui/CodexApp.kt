@@ -4,7 +4,10 @@ import android.Manifest
 import android.content.ClipData
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.net.Uri
 import android.os.Build
+import android.provider.OpenableColumns
+import android.util.Base64
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
@@ -44,11 +47,12 @@ import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.rounded.Send
+import androidx.compose.material.icons.automirrored.rounded.InsertDriveFile
 import androidx.compose.material.icons.rounded.Add
 import androidx.compose.material.icons.rounded.ArrowUpward
 import androidx.compose.material.icons.rounded.Build
@@ -64,6 +68,7 @@ import androidx.compose.material.icons.rounded.ExpandMore
 import androidx.compose.material.icons.rounded.FolderOpen
 import androidx.compose.material.icons.rounded.Folder
 import androidx.compose.material.icons.rounded.History
+import androidx.compose.material.icons.rounded.Image
 import androidx.compose.material.icons.rounded.Info
 import androidx.compose.material.icons.rounded.Menu
 import androidx.compose.material.icons.rounded.MoreVert
@@ -79,41 +84,41 @@ import androidx.compose.material3.AssistChip
 import androidx.compose.material3.Button
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CenterAlignedTopAppBar
-import androidx.compose.material3.Checkbox
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DrawerValue
 import androidx.compose.material3.ElevatedCard
 import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.ExposedDropdownMenuBox
-import androidx.compose.material3.ExposedDropdownMenuAnchorType
-import androidx.compose.material3.ExposedDropdownMenuDefaults
 import androidx.compose.material3.FilledIconButton
+import androidx.compose.material3.FilledTonalIconButton
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.InputChip
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalDrawerSheet
 import androidx.compose.material3.ModalNavigationDrawer
-import androidx.compose.material3.NavigationDrawerItem
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.SegmentedButton
+import androidx.compose.material3.SegmentedButtonDefaults
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBarDefaults
+import androidx.compose.material3.SingleChoiceSegmentedButtonRow
 import androidx.compose.material3.rememberDrawerState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
@@ -124,35 +129,44 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
-import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.ClipEntry
 import androidx.compose.ui.platform.LocalClipboard
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.platform.LocalDensity
-import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.PasswordVisualTransformation
-import androidx.compose.ui.text.rememberTextMeasurer
+import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.text.style.TextOverflow
-import androidx.compose.ui.unit.Constraints
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.net.toUri
 import com.termuxcodex.client.AppUiState
+import com.termuxcodex.client.AppThemeMode
 import com.termuxcodex.client.CodexViewModel
 import com.termuxcodex.client.DEFAULT_TERMUX_HOME
 import com.termuxcodex.client.ConnectionStatus
 import com.termuxcodex.client.MessageKind
 import com.termuxcodex.client.MessageOutcome
+import com.termuxcodex.client.McpServerStatus
 import com.termuxcodex.client.PendingAction
 import com.termuxcodex.client.PendingKind
+import com.termuxcodex.client.PromptFileReference
+import com.termuxcodex.client.PromptImageAttachment
+import com.termuxcodex.client.PromptInput
 import com.termuxcodex.client.RemoteDirectory
 import com.termuxcodex.client.ThreadSummary
 import com.termuxcodex.client.UiMessage
+import com.termuxcodex.client.activePromptReferenceToken
 import com.termuxcodex.client.inputValidationError
+import com.termuxcodex.client.isValidWorkspacePath
+import com.termuxcodex.client.replacePromptReferenceToken
+import com.termuxcodex.client.supportsInputModality
+import java.io.ByteArrayOutputStream
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
@@ -163,10 +177,19 @@ fun CodexApp(viewModel: CodexViewModel) {
     val drawerState = rememberDrawerState(DrawerValue.Closed)
     val scope = rememberCoroutineScope()
     var showSettings by remember { mutableStateOf(false) }
+    var showWorkspacePicker by remember { mutableStateOf(false) }
     var showSearch by remember { mutableStateOf(false) }
-    var scrollToMessageId by remember { mutableStateOf<String?>(null) }
     var threadToDelete by remember { mutableStateOf<ThreadSummary?>(null) }
     var threadToRename by remember { mutableStateOf<ThreadSummary?>(null) }
+
+    LaunchedEffect(state.connectionStatus, state.workspaceConfigured) {
+        showWorkspacePicker = state.connectionStatus == ConnectionStatus.CONNECTED &&
+            !state.workspaceConfigured
+    }
+    val onOpenSettings: () -> Unit = {
+        viewModel.refreshMcpStatus()
+        showSettings = true
+    }
 
     BoxWithConstraints(Modifier.fillMaxSize()) {
         val dualPane = maxWidth >= 840.dp
@@ -176,8 +199,8 @@ fun CodexApp(viewModel: CodexViewModel) {
             onRenameThread = { threadToRename = it },
             onTogglePinned = viewModel::toggleThreadPinned,
             onDeleteThread = { threadToDelete = it },
-            onRefresh = { viewModel.refreshThreads() },
-            onSettings = { showSettings = true },
+            onRefresh = viewModel::refreshThreads,
+            onSearch = { showSearch = true },
         )
         if (dualPane) {
             Row(Modifier.fillMaxSize()) {
@@ -192,14 +215,19 @@ fun CodexApp(viewModel: CodexViewModel) {
                     state = state,
                     showNavigationIcon = false,
                     onOpenDrawer = {},
-                    onSearch = { showSearch = true },
+                    onSettings = onOpenSettings,
                     onOpenThread = viewModel::openThread,
-                    onSend = viewModel::sendPrompt,
+                    onSend = viewModel::sendPromptInput,
                     onStop = viewModel::interruptTurn,
                     onConnect = viewModel::connect,
+                    onChooseWorkspace = { showWorkspacePicker = true },
                     onLoadOlder = viewModel::loadOlderHistory,
-                    scrollToMessageId = scrollToMessageId,
-                    onSearchScrollHandled = { scrollToMessageId = null },
+                    onModelSelected = viewModel::updateComposerModel,
+                    onReasoningSelected = viewModel::updateComposerReasoningEffort,
+                    onSearchFiles = viewModel::searchWorkspaceFiles,
+                    onCompact = viewModel::compactCurrentThread,
+                    onSetGoal = viewModel::setCurrentThreadGoal,
+                    onClearGoal = viewModel::clearCurrentThreadGoal,
                     modifier = Modifier.weight(1f),
                 )
             }
@@ -220,8 +248,8 @@ fun CodexApp(viewModel: CodexViewModel) {
                                 viewModel.openThread(it)
                                 scope.launch { drawerState.close() }
                             },
-                            onSettings = {
-                                showSettings = true
+                            onSearch = {
+                                showSearch = true
                                 scope.launch { drawerState.close() }
                             },
                         ),
@@ -232,14 +260,19 @@ fun CodexApp(viewModel: CodexViewModel) {
                     state = state,
                     showNavigationIcon = true,
                     onOpenDrawer = { scope.launch { drawerState.open() } },
-                    onSearch = { showSearch = true },
+                    onSettings = onOpenSettings,
                     onOpenThread = viewModel::openThread,
-                    onSend = viewModel::sendPrompt,
+                    onSend = viewModel::sendPromptInput,
                     onStop = viewModel::interruptTurn,
                     onConnect = viewModel::connect,
+                    onChooseWorkspace = { showWorkspacePicker = true },
                     onLoadOlder = viewModel::loadOlderHistory,
-                    scrollToMessageId = scrollToMessageId,
-                    onSearchScrollHandled = { scrollToMessageId = null },
+                    onModelSelected = viewModel::updateComposerModel,
+                    onReasoningSelected = viewModel::updateComposerReasoningEffort,
+                    onSearchFiles = viewModel::searchWorkspaceFiles,
+                    onCompact = viewModel::compactCurrentThread,
+                    onSetGoal = viewModel::setCurrentThreadGoal,
+                    onClearGoal = viewModel::clearCurrentThreadGoal,
                 )
             }
         }
@@ -248,18 +281,37 @@ fun CodexApp(viewModel: CodexViewModel) {
     if (showSettings) {
         ConnectionSettingsDialog(
             state = state,
-            onDismiss = {
-                showSettings = false
-                if (state.skillsCwd != state.cwd) viewModel.refreshSkills()
+            onDismiss = { showSettings = false },
+            onSave = { endpoint, token, cwd ->
+                val saved = viewModel.updateSettings(
+                    endpoint,
+                    token,
+                    cwd,
+                    state.model,
+                    state.reasoningEffort,
+                    emptySet(),
+                )
+                if (saved) {
+                    showSettings = false
+                    viewModel.connect()
+                }
+                saved
             },
-            onSave = { endpoint, token, cwd, model, effort, skills ->
-                viewModel.updateSettings(endpoint, token, cwd, model, effort, skills)
-                showSettings = false
-                viewModel.connect()
-            },
-            onRefreshModels = viewModel::refreshModels,
-            onRefreshSkills = { cwd -> viewModel.refreshSkills(cwd, forceReload = true) },
             onReadDirectories = viewModel::readDirectories,
+            onRefreshMcp = viewModel::refreshMcpStatus,
+            onThemeSelected = viewModel::updateThemeMode,
+        )
+    }
+
+    if (showWorkspacePicker && state.connectionStatus == ConnectionStatus.CONNECTED) {
+        RemoteDirectoryPickerDialog(
+            initialPath = state.cwd.ifBlank { DEFAULT_TERMUX_HOME },
+            onReadDirectories = viewModel::readDirectories,
+            onDismiss = { showWorkspacePicker = false },
+            onSelect = { selectedPath ->
+                viewModel.selectWorkspace(selectedPath)
+                showWorkspacePicker = false
+            },
         )
     }
 
@@ -267,10 +319,7 @@ fun CodexApp(viewModel: CodexViewModel) {
         SearchDialog(
             state = state,
             onDismiss = { showSearch = false },
-            onMessageSelected = { messageId ->
-                scrollToMessageId = messageId
-                showSearch = false
-            },
+            onSearchThreads = viewModel::searchThreads,
             onThreadSelected = { threadId ->
                 viewModel.openThread(threadId)
                 showSearch = false
@@ -337,7 +386,7 @@ private data class DrawerCallbacks(
     val onTogglePinned: (String) -> Unit,
     val onDeleteThread: (ThreadSummary) -> Unit,
     val onRefresh: () -> Unit,
-    val onSettings: () -> Unit,
+    val onSearch: () -> Unit,
 )
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -346,14 +395,19 @@ private fun ConversationScaffold(
     state: AppUiState,
     showNavigationIcon: Boolean,
     onOpenDrawer: () -> Unit,
-    onSearch: () -> Unit,
+    onSettings: () -> Unit,
     onOpenThread: (String) -> Unit,
-    onSend: (String) -> Boolean,
+    onSend: (PromptInput) -> Boolean,
     onStop: () -> Unit,
     onConnect: () -> Unit,
+    onChooseWorkspace: () -> Unit,
     onLoadOlder: () -> Unit,
-    scrollToMessageId: String?,
-    onSearchScrollHandled: () -> Unit,
+    onModelSelected: (String) -> Unit,
+    onReasoningSelected: (String) -> Unit,
+    onSearchFiles: (String, (List<PromptFileReference>, String?) -> Unit) -> Unit,
+    onCompact: () -> Boolean,
+    onSetGoal: (String) -> Boolean,
+    onClearGoal: () -> Boolean,
     modifier: Modifier = Modifier,
 ) {
     Scaffold(
@@ -377,8 +431,8 @@ private fun ConversationScaffold(
                     }
                 },
                 actions = {
-                    IconButton(onClick = onSearch) {
-                        Icon(Icons.Rounded.Search, contentDescription = "搜索")
+                    IconButton(onClick = onSettings) {
+                        Icon(Icons.Rounded.Settings, contentDescription = "设置")
                     }
                 },
                 colors = TopAppBarDefaults.topAppBarColors(
@@ -387,12 +441,21 @@ private fun ConversationScaffold(
             )
         },
         bottomBar = {
-            PromptBar(
-                connected = state.connectionStatus == ConnectionStatus.CONNECTED,
-                busy = state.busy,
-                onSend = onSend,
-                onStop = onStop,
-            )
+            if (state.connectionStatus == ConnectionStatus.CONNECTED &&
+                state.workspaceConfigured
+            ) {
+                PromptBar(
+                    state = state,
+                    onSend = onSend,
+                    onStop = onStop,
+                    onModelSelected = onModelSelected,
+                    onReasoningSelected = onReasoningSelected,
+                    onSearchFiles = onSearchFiles,
+                    onCompact = onCompact,
+                    onSetGoal = onSetGoal,
+                    onClearGoal = onClearGoal,
+                )
+            }
         },
     ) { padding ->
         Column(
@@ -413,10 +476,9 @@ private fun ConversationScaffold(
                         .fillMaxWidth()
                         .weight(1f),
                     onConnect = onConnect,
-                    onSuggestion = { onSend(it) },
+                    onChooseWorkspace = onChooseWorkspace,
+                    onSuggestion = { onSend(PromptInput(it)) },
                     onLoadOlder = onLoadOlder,
-                    scrollToMessageId = scrollToMessageId,
-                    onSearchScrollHandled = onSearchScrollHandled,
                 )
             }
         }
@@ -457,8 +519,8 @@ private fun ConversationDrawer(
     state: AppUiState,
     formatTime: (Long) -> String,
     callbacks: DrawerCallbacks,
-    permanent: Boolean = false,
     modifier: Modifier = Modifier,
+    permanent: Boolean = false,
 ) {
     val content: @Composable () -> Unit = {
         Column(
@@ -476,28 +538,32 @@ private fun ConversationDrawer(
                 tonalElevation = 0.dp,
                 modifier = Modifier
                     .fillMaxWidth()
+                    .heightIn(min = 100.dp)
                     .padding(vertical = 4.dp),
             ) {
                 Row(
-                    modifier = Modifier.padding(start = 14.dp, top = 12.dp, bottom = 12.dp, end = 6.dp),
+                    modifier = Modifier.padding(start = 16.dp, top = 16.dp, bottom = 16.dp, end = 6.dp),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
                     Surface(
-                        shape = RoundedCornerShape(8.dp),
+                        shape = RoundedCornerShape(10.dp),
                         color = MaterialTheme.colorScheme.primaryContainer,
-                        modifier = Modifier.size(46.dp),
+                        modifier = Modifier.size(58.dp),
                     ) {
                         Box(contentAlignment = Alignment.Center) {
                             Icon(
                                 Icons.Rounded.Terminal,
                                 contentDescription = null,
-                                modifier = Modifier.size(30.dp),
+                                modifier = Modifier.size(38.dp),
                             )
                         }
                     }
-                    Spacer(Modifier.width(12.dp))
-                    Column(Modifier.weight(1f)) {
-                        Text("Codex Android", style = MaterialTheme.typography.titleSmall)
+                    Spacer(Modifier.width(14.dp))
+                    Column(
+                        modifier = Modifier.weight(1f),
+                        verticalArrangement = Arrangement.spacedBy(5.dp),
+                    ) {
+                        Text("Codex Android", style = MaterialTheme.typography.titleMedium)
                         Text(
                             state.endpoint,
                             style = MaterialTheme.typography.bodySmall,
@@ -508,7 +574,7 @@ private fun ConversationDrawer(
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             Box(
                                 modifier = Modifier
-                                    .size(7.dp)
+                                    .size(8.dp)
                                     .clip(CircleShape)
                                     .background(
                                         when (state.connectionStatus) {
@@ -525,35 +591,54 @@ private fun ConversationDrawer(
                                     ConnectionStatus.CONNECTING -> "正在连接"
                                     ConnectionStatus.DISCONNECTED -> "未连接"
                                 },
-                                style = MaterialTheme.typography.labelSmall,
+                                style = MaterialTheme.typography.labelMedium,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                             )
                         }
                     }
-                    IconButton(onClick = callbacks.onRefresh) {
+                    IconButton(
+                        onClick = callbacks.onRefresh,
+                        enabled = state.connectionStatus != ConnectionStatus.CONNECTING,
+                    ) {
                         Icon(Icons.Rounded.Refresh, contentDescription = "刷新会话")
                     }
                 }
             }
 
-            Surface(
-                onClick = callbacks.onNewThread,
-                color = MaterialTheme.colorScheme.primary,
-                contentColor = MaterialTheme.colorScheme.onPrimary,
-                shape = RoundedCornerShape(10.dp),
-                shadowElevation = 2.dp,
+            Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(top = 8.dp, bottom = 4.dp),
+                    .padding(start = 2.dp, top = 50.dp, end = 4.dp, bottom = 6.dp),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically,
             ) {
-                Row(
-                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.Center,
+                Button(
+                    onClick = callbacks.onNewThread,
+                    shape = CircleShape,
+                    modifier = Modifier
+                        .width(230.dp)
+                        .height(48.dp),
+                    contentPadding = PaddingValues(horizontal = 18.dp, vertical = 12.dp),
                 ) {
-                    Icon(Icons.Rounded.Add, contentDescription = null, modifier = Modifier.size(20.dp))
+                    Icon(
+                        Icons.Rounded.Add,
+                        contentDescription = null,
+                        modifier = Modifier.size(21.dp),
+                    )
                     Spacer(Modifier.width(8.dp))
                     Text("新会话", style = MaterialTheme.typography.labelLarge)
+                }
+                FilledTonalIconButton(
+                    onClick = callbacks.onSearch,
+                    enabled = state.connectionStatus == ConnectionStatus.CONNECTED,
+                    shape = CircleShape,
+                    modifier = Modifier.size(48.dp),
+                ) {
+                    Icon(
+                        Icons.Rounded.Search,
+                        contentDescription = "搜索会话",
+                        modifier = Modifier.size(24.dp),
+                    )
                 }
             }
 
@@ -597,18 +682,6 @@ private fun ConversationDrawer(
                 }
             }
 
-            HorizontalDivider(
-                modifier = Modifier.padding(top = 6.dp),
-                color = MaterialTheme.colorScheme.outlineVariant,
-            )
-
-            NavigationDrawerItem(
-                label = { Text("设置") },
-                selected = false,
-                onClick = callbacks.onSettings,
-                icon = { Icon(Icons.Rounded.Settings, contentDescription = null) },
-                modifier = Modifier.padding(vertical = 8.dp),
-            )
         }
     }
     if (permanent) {
@@ -787,11 +860,16 @@ private fun ConversationContent(
     state: AppUiState,
     modifier: Modifier,
     onConnect: () -> Unit,
+    onChooseWorkspace: () -> Unit,
     onSuggestion: (String) -> Unit,
     onLoadOlder: () -> Unit,
-    scrollToMessageId: String?,
-    onSearchScrollHandled: () -> Unit,
 ) {
+    if (state.connectionStatus == ConnectionStatus.CONNECTED && !state.workspaceConfigured) {
+        Box(modifier, contentAlignment = Alignment.Center) {
+            WorkspaceSetupPanel(state.cwd, onChooseWorkspace)
+        }
+        return
+    }
     if (state.messages.isEmpty()) {
         Box(modifier, contentAlignment = Alignment.Center) {
             if (state.connectionStatus == ConnectionStatus.CONNECTED) {
@@ -818,16 +896,6 @@ private fun ConversationContent(
             listState.scrollToItem(state.messages.lastIndex + if (state.historyNextCursor != null) 1 else 0)
         }
     }
-    LaunchedEffect(scrollToMessageId, state.messages.size) {
-        val messageId = scrollToMessageId ?: return@LaunchedEffect
-        val messageIndex = state.messages.indexOfFirst { it.id == messageId }
-        if (messageIndex >= 0) {
-            autoScroll = false
-            val headerOffset = if (state.historyNextCursor != null || state.historyLoading) 1 else 0
-            listState.scrollToItem(messageIndex + headerOffset)
-        }
-        onSearchScrollHandled()
-    }
     LazyColumn(
         state = listState,
         modifier = modifier,
@@ -853,6 +921,65 @@ private fun ConversationContent(
             contentType = { it.kind },
         ) { message ->
             MessageItem(message)
+        }
+    }
+}
+
+@Composable
+private fun WorkspaceSetupPanel(
+    cwd: String,
+    onChooseWorkspace: () -> Unit,
+) {
+    ElevatedCard(
+        modifier = Modifier
+            .padding(24.dp)
+            .widthIn(max = 560.dp),
+        colors = CardDefaults.elevatedCardColors(
+            containerColor = MaterialTheme.colorScheme.surfaceContainerLow,
+        ),
+    ) {
+        Column(
+            modifier = Modifier.padding(24.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+        ) {
+            Surface(
+                shape = RoundedCornerShape(20.dp),
+                color = MaterialTheme.colorScheme.primaryContainer,
+                modifier = Modifier.size(64.dp),
+            ) {
+                Box(contentAlignment = Alignment.Center) {
+                    Icon(
+                        Icons.Rounded.FolderOpen,
+                        contentDescription = null,
+                        modifier = Modifier.size(32.dp),
+                        tint = MaterialTheme.colorScheme.onPrimaryContainer,
+                    )
+                }
+            }
+            Spacer(Modifier.height(18.dp))
+            Text("选择工作目录", style = MaterialTheme.typography.headlineSmall)
+            Spacer(Modifier.height(8.dp))
+            Text(
+                "Codex 已连接。请选择它可以读取、修改和运行代码的 Termux 目录。",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                textAlign = TextAlign.Center,
+            )
+            Spacer(Modifier.height(12.dp))
+            Text(
+                cwd,
+                style = MaterialTheme.typography.labelMedium.copy(fontFamily = FontFamily.Monospace),
+                color = MaterialTheme.colorScheme.primary,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis,
+                textAlign = TextAlign.Center,
+            )
+            Spacer(Modifier.height(22.dp))
+            Button(onClick = onChooseWorkspace) {
+                Icon(Icons.Rounded.FolderOpen, contentDescription = null)
+                Spacer(Modifier.width(8.dp))
+                Text("选择工作目录")
+            }
         }
     }
 }
@@ -1291,100 +1418,584 @@ private fun CopyTextButton(
 private const val MAX_COMMAND_PREVIEW_CHARS = 12_000
 private const val MAX_COMMAND_OUTPUT_CHARS = 200_000
 
+private data class PromptSlashCommand(
+    val name: String,
+    val description: String,
+    val prompt: String,
+)
+
+private val PROMPT_SLASH_COMMANDS = listOf(
+    PromptSlashCommand("review", "审查当前改动", "审查当前工作区的改动，按严重程度列出问题和建议。"),
+    PromptSlashCommand("test", "运行并修复测试", "运行当前项目的测试，定位失败原因并修复。"),
+    PromptSlashCommand("fix", "定位并修复问题", "检查当前项目，定位最需要修复的问题并完成修复。"),
+    PromptSlashCommand("explain", "解释项目结构", "分析当前项目并说明结构、关键模块和主要工作流。"),
+    PromptSlashCommand("run", "运行终端命令", "运行以下终端命令并返回输出："),
+    PromptSlashCommand("init", "创建项目说明", "检查当前项目并创建或更新适合本项目的 AGENTS.md。"),
+    PromptSlashCommand("plan", "制定执行计划", "先分析任务并制定分步骤执行计划，再开始实施。"),
+    PromptSlashCommand("status", "总结当前状态", "总结当前任务已经完成的内容、剩余工作和潜在风险。"),
+    PromptSlashCommand("diff", "检查当前差异", "检查当前工作区的文件差异并总结改动和风险。"),
+    PromptSlashCommand("security", "执行安全检查", "检查当前改动中的安全风险，按严重程度给出修复建议。"),
+    PromptSlashCommand("docs", "更新项目文档", "检查当前改动并更新受影响的项目文档。"),
+    PromptSlashCommand("compact", "压缩会话上下文", "/compact"),
+    PromptSlashCommand("goal", "设置会话目标", "/goal "),
+    PromptSlashCommand("goal-clear", "清除会话目标", "/goal-clear"),
+)
+
 @Composable
 private fun PromptBar(
-    connected: Boolean,
-    busy: Boolean,
-    onSend: (String) -> Boolean,
+    state: AppUiState,
+    onSend: (PromptInput) -> Boolean,
     onStop: () -> Unit,
+    onModelSelected: (String) -> Unit,
+    onReasoningSelected: (String) -> Unit,
+    onSearchFiles: (String, (List<PromptFileReference>, String?) -> Unit) -> Unit,
+    onCompact: () -> Boolean,
+    onSetGoal: (String) -> Boolean,
+    onClearGoal: () -> Boolean,
 ) {
-    var prompt by rememberSaveable { mutableStateOf("") }
-    var promptFieldWidth by remember { mutableStateOf(0) }
-    val textMeasurer = rememberTextMeasurer()
-    val promptTextStyle = MaterialTheme.typography.bodyLarge
-    val textChromeWidth = with(LocalDensity.current) { 80.dp.roundToPx() }
-    val promptLineCount = remember(prompt, promptFieldWidth, promptTextStyle, textChromeWidth) {
-        if (prompt.isEmpty() || promptFieldWidth <= textChromeWidth) {
-            1
-        } else {
-            textMeasurer.measure(
-                text = AnnotatedString(prompt),
-                style = promptTextStyle,
-                maxLines = 5,
-                constraints = Constraints(maxWidth = promptFieldWidth - textChromeWidth),
-            ).lineCount.coerceAtLeast(1)
+    val connected = state.connectionStatus == ConnectionStatus.CONNECTED
+    var prompt by rememberSaveable(state.currentThreadId, stateSaver = TextFieldValue.Saver) {
+        mutableStateOf(TextFieldValue())
+    }
+    var images by remember(state.currentThreadId) { mutableStateOf(emptyList<PromptImageAttachment>()) }
+    var files by remember(state.currentThreadId) { mutableStateOf(emptyList<PromptFileReference>()) }
+    var skills by remember(state.currentThreadId) { mutableStateOf(emptyList<com.termuxcodex.client.CodexSkill>()) }
+    var attachmentError by remember { mutableStateOf<String?>(null) }
+    var modelMenuExpanded by remember { mutableStateOf(false) }
+    var reasoningMenuExpanded by remember { mutableStateOf(false) }
+    var fileSuggestions by remember { mutableStateOf(emptyList<PromptFileReference>()) }
+    var fileSearchError by remember { mutableStateOf<String?>(null) }
+    var fileSearchLoading by remember { mutableStateOf(false) }
+    var fileSearchGeneration by remember { mutableIntStateOf(0) }
+    val scope = rememberCoroutineScope()
+    val context = LocalContext.current
+    val activeToken = activePromptReferenceToken(prompt.text, prompt.selection.end)
+    val selectedModel = state.availableModels.firstOrNull { it.model == state.model }
+    val defaultModel = state.availableModels.firstOrNull { it.model == state.configModel }
+        ?: state.availableModels.firstOrNull { it.isDefault }
+    val reasoningModel = selectedModel ?: defaultModel
+    val reasoningOptions = reasoningModel?.supportedReasoningEfforts.orEmpty()
+    val imageInputSupported = reasoningModel?.supportsInputModality("image") ?: true
+    val modelLabel = selectedModel?.displayName ?: "跟随配置文件"
+    val effortLabel = state.reasoningEffort.takeIf { it.isNotBlank() }
+        ?.let(::reasoningLabel)
+        ?: "跟随配置文件"
+    val hasContent = prompt.text.isNotBlank() || images.isNotEmpty() ||
+        files.isNotEmpty() || skills.isNotEmpty()
+
+    val imagePicker = rememberLauncherForActivityResult(
+        ActivityResultContracts.GetMultipleContents()
+    ) { uris ->
+        if (!imageInputSupported) {
+            attachmentError = "当前模型不支持图片输入"
+            return@rememberLauncherForActivityResult
+        }
+        val remaining = (MAX_PROMPT_IMAGES - images.size).coerceAtLeast(0)
+        if (remaining == 0) {
+            attachmentError = "最多添加 $MAX_PROMPT_IMAGES 张图片"
+            return@rememberLauncherForActivityResult
+        }
+        scope.launch {
+            val loaded = withContext(Dispatchers.IO) {
+                uris.take(remaining).map { loadPromptImage(context, it) }
+            }
+            val accepted = loaded.mapNotNull { it.attachment }
+            images = (images + accepted).distinctBy { it.dataUrl }.take(MAX_PROMPT_IMAGES)
+            attachmentError = loaded.firstNotNullOfOrNull { it.error }
         }
     }
-    val multiline = promptLineCount > 1
+
+    LaunchedEffect(imageInputSupported) {
+        if (!imageInputSupported && images.isNotEmpty()) {
+            images = emptyList()
+            attachmentError = "当前模型不支持图片输入，已移除附件"
+        }
+    }
+
+    LaunchedEffect(activeToken?.marker, activeToken?.query, state.cwd) {
+        val generation = ++fileSearchGeneration
+        if (activeToken?.marker != '@' || activeToken.query.isBlank()) {
+            fileSuggestions = emptyList()
+            fileSearchError = null
+            fileSearchLoading = false
+            return@LaunchedEffect
+        }
+        delay(FILE_SEARCH_DEBOUNCE_MS)
+        fileSearchLoading = true
+        fileSearchError = null
+        onSearchFiles(activeToken.query) { results, error ->
+            if (generation == fileSearchGeneration) {
+                fileSuggestions = results
+                fileSearchError = error
+                fileSearchLoading = false
+            }
+        }
+    }
+
+    val skillSuggestions = remember(activeToken, state.availableSkills) {
+        if (activeToken?.marker != '$') {
+            emptyList()
+        } else {
+            state.availableSkills.filter { skill ->
+                activeToken.query.isBlank() ||
+                    skill.displayName.contains(activeToken.query, ignoreCase = true) ||
+                    skill.name.contains(activeToken.query, ignoreCase = true)
+            }.take(MAX_PROMPT_SUGGESTIONS)
+        }
+    }
+    val slashCommands = remember(activeToken) {
+        if (activeToken?.marker != '/') {
+            emptyList()
+        } else {
+            PROMPT_SLASH_COMMANDS.filter { command ->
+                activeToken.query.isBlank() || command.name.startsWith(activeToken.query, ignoreCase = true)
+            }
+        }
+    }
+
+    fun submit() {
+        if (images.isNotEmpty() && !imageInputSupported) {
+            attachmentError = "当前模型不支持图片输入"
+            return
+        }
+        val slash = parsePromptSlashCommand(prompt.text)
+        if (images.isEmpty() && files.isEmpty() && skills.isEmpty()) {
+            when (slash?.name) {
+                "compact" -> {
+                    if (onCompact()) prompt = TextFieldValue()
+                    return
+                }
+                "goal" -> {
+                    if (onSetGoal(slash.argument)) prompt = TextFieldValue()
+                    return
+                }
+                "goal-clear" -> {
+                    if (onClearGoal()) prompt = TextFieldValue()
+                    return
+                }
+            }
+        }
+        val input = PromptInput(
+            text = expandPromptSlashCommand(prompt.text),
+            files = files,
+            skills = skills,
+            images = images,
+        )
+        if (onSend(input)) {
+            prompt = TextFieldValue()
+            images = emptyList()
+            files = emptyList()
+            skills = emptyList()
+            attachmentError = null
+        }
+    }
+
     Surface(
         tonalElevation = 3.dp,
-        shadowElevation = 6.dp,
+        shadowElevation = 3.dp,
         modifier = Modifier
             .fillMaxWidth()
             .navigationBarsPadding()
             .imePadding(),
     ) {
-        Column {
-            Row(
+        Column(
+            modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            PromptReferenceSuggestions(
+                token = activeToken,
+                cwd = state.cwd,
+                files = fileSuggestions,
+                skills = skillSuggestions,
+                commands = slashCommands,
+                loading = fileSearchLoading,
+                error = fileSearchError,
+                onFileSelected = { file ->
+                    val token = activePromptReferenceToken(prompt.text, prompt.selection.end)
+                        ?: return@PromptReferenceSuggestions
+                    val label = fileDisplayPath(file, state.cwd)
+                    val (updated, cursor) = replacePromptReferenceToken(prompt.text, token, label)
+                    prompt = TextFieldValue(updated, TextRange(cursor))
+                    files = (files + file).distinctBy { it.path }
+                },
+                onSkillSelected = { skill ->
+                    val token = activePromptReferenceToken(prompt.text, prompt.selection.end)
+                        ?: return@PromptReferenceSuggestions
+                    val (updated, cursor) = replacePromptReferenceToken(
+                        prompt.text,
+                        token,
+                        skill.displayName,
+                    )
+                    prompt = TextFieldValue(updated, TextRange(cursor))
+                    skills = (skills + skill).distinctBy { it.path }
+                },
+                onCommandSelected = { command ->
+                    val token = activePromptReferenceToken(prompt.text, prompt.selection.end)
+                        ?: return@PromptReferenceSuggestions
+                    val updated = prompt.text.replaceRange(token.start, token.end, command.prompt)
+                    prompt = TextFieldValue(
+                        text = updated,
+                        selection = TextRange(token.start + command.prompt.length),
+                    )
+                },
+            )
+
+            Surface(
+                shape = RoundedCornerShape(20.dp),
+                color = MaterialTheme.colorScheme.surfaceContainerLow,
+                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
                 modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 12.dp, vertical = 10.dp),
-                verticalAlignment = Alignment.Bottom,
+                    .fillMaxWidth(),
             ) {
-                Box(modifier = Modifier.fillMaxWidth()) {
-                    OutlinedTextField(
+                Column(
+                    modifier = Modifier.padding(start = 14.dp, top = 12.dp, end = 8.dp, bottom = 8.dp),
+                ) {
+                    if (images.isNotEmpty() || files.isNotEmpty() || skills.isNotEmpty()) {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .horizontalScroll(rememberScrollState()),
+                            horizontalArrangement = Arrangement.spacedBy(6.dp),
+                        ) {
+                            images.forEach { image ->
+                                InputChip(
+                                    selected = false,
+                                    onClick = { images = images - image },
+                                    label = {
+                                        Text(image.name, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                    },
+                                    leadingIcon = {
+                                        Icon(Icons.Rounded.Image, null, Modifier.size(16.dp))
+                                    },
+                                    trailingIcon = {
+                                        Icon(Icons.Rounded.Close, "移除 ${image.name}", Modifier.size(16.dp))
+                                    },
+                                )
+                            }
+                            files.forEach { file ->
+                                InputChip(
+                                    selected = false,
+                                    onClick = {
+                                        files = files - file
+                                        prompt = prompt.copy(
+                                            text = prompt.text.replace("@${fileDisplayPath(file, state.cwd)}", ""),
+                                        )
+                                    },
+                                    label = {
+                                        Text(
+                                            fileDisplayPath(file, state.cwd),
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis,
+                                        )
+                                    },
+                                    leadingIcon = {
+                                        Icon(Icons.AutoMirrored.Rounded.InsertDriveFile, null, Modifier.size(16.dp))
+                                    },
+                                    trailingIcon = {
+                                        Icon(Icons.Rounded.Close, "移除文件引用", Modifier.size(16.dp))
+                                    },
+                                )
+                            }
+                            skills.forEach { skill ->
+                                InputChip(
+                                    selected = false,
+                                    onClick = {
+                                        skills = skills - skill
+                                        prompt = prompt.copy(
+                                            text = prompt.text.replace("\$${skill.displayName}", ""),
+                                        )
+                                    },
+                                    label = {
+                                        Text(skill.displayName, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                    },
+                                    leadingIcon = {
+                                        Icon(Icons.Rounded.Build, null, Modifier.size(16.dp))
+                                    },
+                                    trailingIcon = {
+                                        Icon(Icons.Rounded.Close, "移除 Skill 引用", Modifier.size(16.dp))
+                                    },
+                                )
+                            }
+                        }
+                        Spacer(Modifier.height(6.dp))
+                    }
+
+                    BasicTextField(
                         value = prompt,
-                        onValueChange = { prompt = it },
+                        onValueChange = { value ->
+                            prompt = value
+                            files = files.filter { value.text.contains("@${fileDisplayPath(it, state.cwd)}") }
+                            skills = skills.filter { value.text.contains("\$${it.displayName}") }
+                        },
                         modifier = Modifier
                             .fillMaxWidth()
-                            .onSizeChanged { promptFieldWidth = it.width },
+                            .heightIn(min = 84.dp, max = 168.dp),
                         enabled = connected,
-                        placeholder = {
-                            Text(
-                                when {
-                                    !connected -> "连接后即可开始"
-                                    busy -> "给当前任务追加指令…"
-                                    else -> "给 Codex 分配任务…"
-                                }
-                            )
-                        },
-                        shape = RoundedCornerShape(if (multiline) 24.dp else 50.dp),
-                        minLines = if (multiline) (promptLineCount + 1).coerceAtMost(6) else 1,
+                        textStyle = MaterialTheme.typography.bodyLarge.copy(
+                            color = MaterialTheme.colorScheme.onSurface,
+                        ),
+                        cursorBrush = androidx.compose.ui.graphics.SolidColor(MaterialTheme.colorScheme.primary),
+                        minLines = 3,
                         maxLines = 6,
-                        keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
-                        keyboardActions = KeyboardActions(onSend = {
-                            if (prompt.isNotBlank() && connected) {
-                                if (onSend(prompt)) prompt = ""
+                        keyboardOptions = KeyboardOptions(imeAction = ImeAction.Default),
+                        decorationBox = { innerTextField ->
+                            Box(Modifier.fillMaxWidth()) {
+                                if (prompt.text.isEmpty()) {
+                                    Text(
+                                        when {
+                                            !connected -> "连接后即可开始"
+                                            state.busy -> "给当前任务追加指令…"
+                                            else -> "输入任务，支持 / 命令、@ 文件和 $ Skills"
+                                        },
+                                        style = MaterialTheme.typography.bodyLarge,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    )
+                                }
+                                innerTextField()
                             }
-                        }),
-                        trailingIcon = if (multiline) {
-                            null
-                        } else {
-                            { Spacer(Modifier.width(52.dp)) }
                         },
                     )
-                    FilledIconButton(
-                        onClick = {
-                            if (busy && prompt.isBlank()) {
-                                onStop()
-                            } else if (prompt.isNotBlank()) {
-                                if (onSend(prompt)) prompt = ""
+
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    ) {
+                        Box(
+                            modifier = Modifier.size(40.dp),
+                            contentAlignment = Alignment.Center,
+                        ) {
+                            IconButton(
+                                onClick = { imagePicker.launch("image/*") },
+                                enabled = connected && imageInputSupported &&
+                                    images.size < MAX_PROMPT_IMAGES,
+                                modifier = Modifier.size(40.dp),
+                            ) {
+                                Icon(Icons.Rounded.Add, contentDescription = "添加图片附件")
+                            }
+                        }
+
+                        Box(Modifier.weight(1f)) {
+                            TextButton(
+                                onClick = { modelMenuExpanded = true },
+                                enabled = connected && !state.busy && state.availableModels.isNotEmpty(),
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .height(40.dp),
+                                contentPadding = PaddingValues(horizontal = 8.dp),
+                            ) {
+                                Text(
+                                    modelLabel,
+                                    modifier = Modifier.weight(1f),
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                    textAlign = TextAlign.Center,
+                                )
+                                Icon(Icons.Rounded.ExpandMore, contentDescription = null, Modifier.size(16.dp))
+                            }
+                            DropdownMenu(
+                                expanded = modelMenuExpanded,
+                                onDismissRequest = { modelMenuExpanded = false },
+                            ) {
+                                DropdownMenuItem(
+                                    text = { Text("跟随配置文件") },
+                                    onClick = {
+                                        onModelSelected("")
+                                        modelMenuExpanded = false
+                                    },
+                                )
+                                state.availableModels.forEach { model ->
+                                    DropdownMenuItem(
+                                        text = { Text(model.displayName) },
+                                        onClick = {
+                                            onModelSelected(model.model)
+                                            modelMenuExpanded = false
+                                        },
+                                    )
+                                }
+                            }
+                        }
+
+                        Box(Modifier.weight(1f)) {
+                            TextButton(
+                                onClick = { reasoningMenuExpanded = true },
+                                enabled = connected && !state.busy && reasoningOptions.isNotEmpty(),
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .height(40.dp),
+                                contentPadding = PaddingValues(horizontal = 8.dp),
+                            ) {
+                                Text(
+                                    effortLabel,
+                                    modifier = Modifier.weight(1f),
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                    textAlign = TextAlign.Center,
+                                )
+                                Icon(Icons.Rounded.ExpandMore, contentDescription = null, Modifier.size(16.dp))
+                            }
+                            DropdownMenu(
+                                expanded = reasoningMenuExpanded,
+                                onDismissRequest = { reasoningMenuExpanded = false },
+                                modifier = Modifier.width(164.dp),
+                            ) {
+                                DropdownMenuItem(
+                                    text = { Text("跟随配置文件") },
+                                    onClick = {
+                                        onReasoningSelected("")
+                                        reasoningMenuExpanded = false
+                                    },
+                                )
+                                reasoningOptions.forEach { effort ->
+                                    DropdownMenuItem(
+                                        text = { Text(reasoningLabel(effort.value)) },
+                                        onClick = {
+                                            onReasoningSelected(effort.value)
+                                            reasoningMenuExpanded = false
+                                        },
+                                    )
+                                }
+                            }
+                        }
+
+                        Box(
+                            modifier = Modifier.size(40.dp),
+                            contentAlignment = Alignment.Center,
+                        ) {
+                            FilledIconButton(
+                                onClick = {
+                                    if (state.busy && !hasContent) onStop() else submit()
+                                },
+                                enabled = connected && (state.busy || hasContent),
+                                shape = CircleShape,
+                                modifier = Modifier.size(40.dp),
+                            ) {
+                                val showStop = state.busy && !hasContent
+                                Icon(
+                                    if (showStop) Icons.Rounded.Stop else Icons.Rounded.ArrowUpward,
+                                    contentDescription = if (showStop) {
+                                        "停止任务"
+                                    } else if (state.busy) {
+                                        "追加指令"
+                                    } else {
+                                        "发送"
+                                    },
+                                    modifier = Modifier.size(20.dp),
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+
+            attachmentError?.let { error ->
+                Text(
+                    error,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.error,
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun PromptReferenceSuggestions(
+    token: com.termuxcodex.client.PromptReferenceToken?,
+    cwd: String,
+    files: List<PromptFileReference>,
+    skills: List<com.termuxcodex.client.CodexSkill>,
+    commands: List<PromptSlashCommand>,
+    loading: Boolean,
+    error: String?,
+    onFileSelected: (PromptFileReference) -> Unit,
+    onSkillSelected: (com.termuxcodex.client.CodexSkill) -> Unit,
+    onCommandSelected: (PromptSlashCommand) -> Unit,
+) {
+    if (token == null) return
+    val hasResults = files.isNotEmpty() || skills.isNotEmpty() || commands.isNotEmpty()
+    Surface(
+        shape = RoundedCornerShape(12.dp),
+        color = MaterialTheme.colorScheme.surfaceContainer,
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+        shadowElevation = 4.dp,
+        modifier = Modifier.fillMaxWidth(),
+    ) {
+        Column(
+            modifier = Modifier
+                .heightIn(max = 196.dp)
+                .verticalScroll(rememberScrollState())
+                .padding(vertical = 6.dp),
+        ) {
+            when {
+                token.marker == '@' && token.query.isBlank() -> PromptSuggestionHint("继续输入文件名")
+                loading -> {
+                    LinearProgressIndicator(Modifier.fillMaxWidth())
+                    PromptSuggestionHint("正在搜索工作区文件")
+                }
+                error != null -> PromptSuggestionHint("文件搜索不可用：$error")
+                !hasResults -> PromptSuggestionHint(
+                    when (token.marker) {
+                        '@' -> "没有匹配的文件"
+                        '$' -> "没有匹配的 Skills"
+                        else -> "没有匹配的命令"
+                    }
+                )
+                token.marker == '@' -> files.forEach { file ->
+                    DropdownMenuItem(
+                        text = {
+                            Column {
+                                Text(file.name, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                Text(
+                                    fileDisplayPath(file, cwd),
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                )
                             }
                         },
-                        enabled = connected && (busy || prompt.isNotBlank()),
-                        shape = CircleShape,
-                        modifier = Modifier
-                            .align(Alignment.BottomEnd)
-                            .padding(end = 4.dp, bottom = 4.dp)
-                            .size(48.dp),
-                    ) {
-                        val showStop = busy && prompt.isBlank()
-                        Icon(
-                            if (showStop) Icons.Rounded.Stop else Icons.AutoMirrored.Rounded.Send,
-                            contentDescription = if (showStop) "停止任务" else if (busy) "追加指令" else "发送",
-                            modifier = Modifier.size(24.dp),
-                        )
-                    }
+                        leadingIcon = {
+                            Icon(Icons.AutoMirrored.Rounded.InsertDriveFile, contentDescription = null)
+                        },
+                        onClick = { onFileSelected(file) },
+                    )
+                }
+                token.marker == '$' -> skills.forEach { skill ->
+                    DropdownMenuItem(
+                        text = {
+                            Column {
+                                Text(skill.displayName, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                if (skill.description.isNotBlank()) {
+                                    Text(
+                                        skill.description,
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis,
+                                    )
+                                }
+                            }
+                        },
+                        leadingIcon = { Icon(Icons.Rounded.Build, contentDescription = null) },
+                        onClick = { onSkillSelected(skill) },
+                    )
+                }
+                else -> commands.forEach { command ->
+                    DropdownMenuItem(
+                        text = {
+                            Column {
+                                Text("/${command.name}")
+                                Text(
+                                    command.description,
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                            }
+                        },
+                        leadingIcon = { Icon(Icons.Rounded.Code, contentDescription = null) },
+                        onClick = { onCommandSelected(command) },
+                    )
                 }
             }
         }
@@ -1392,92 +2003,195 @@ private fun PromptBar(
 }
 
 @Composable
+private fun PromptSuggestionHint(text: String) {
+    Text(
+        text,
+        modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp),
+        style = MaterialTheme.typography.bodySmall,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+    )
+}
+
+private data class PromptImageLoadResult(
+    val attachment: PromptImageAttachment? = null,
+    val error: String? = null,
+)
+
+private fun loadPromptImage(context: android.content.Context, uri: Uri): PromptImageLoadResult {
+    val resolver = context.contentResolver
+    val name = resolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)?.use { cursor ->
+        if (cursor.moveToFirst()) cursor.getString(0) else null
+    } ?: "图片"
+    val mimeType = resolver.getType(uri)?.takeIf { it.startsWith("image/") } ?: "image/jpeg"
+    val stream = resolver.openInputStream(uri)
+        ?: return PromptImageLoadResult(error = "无法读取 $name")
+    val bytes = stream.use { input ->
+        readLimitedBytes(input, MAX_PROMPT_IMAGE_BYTES)
+    } ?: return PromptImageLoadResult(error = "$name 超过 8 MB，无法添加")
+    if (bytes.isEmpty()) return PromptImageLoadResult(error = "$name 是空文件")
+    val encoded = Base64.encodeToString(bytes, Base64.NO_WRAP)
+    return PromptImageLoadResult(
+        attachment = PromptImageAttachment(name, "data:$mimeType;base64,$encoded")
+    )
+}
+
+private fun readLimitedBytes(input: java.io.InputStream, maxBytes: Int): ByteArray? {
+    val output = ByteArrayOutputStream()
+    val buffer = ByteArray(16 * 1024)
+    var total = 0
+    while (true) {
+        val count = input.read(buffer)
+        if (count < 0) break
+        total += count
+        if (total > maxBytes) return null
+        output.write(buffer, 0, count)
+    }
+    return output.toByteArray()
+}
+
+private fun fileDisplayPath(file: PromptFileReference, cwd: String): String =
+    file.path.removePrefix(cwd.trimEnd('/') + "/")
+
+private fun expandPromptSlashCommand(text: String): String {
+    val trimmed = text.trim()
+    if (!trimmed.startsWith('/')) return text
+    val name = trimmed.drop(1).substringBefore(' ')
+    val command = PROMPT_SLASH_COMMANDS.firstOrNull { it.name.equals(name, ignoreCase = true) }
+        ?: return text
+    val argument = trimmed.drop(name.length + 1).trim()
+    return if (argument.isEmpty()) command.prompt else "${command.prompt} $argument"
+}
+
+private data class ParsedPromptSlashCommand(
+    val name: String,
+    val argument: String,
+)
+
+private fun parsePromptSlashCommand(text: String): ParsedPromptSlashCommand? {
+    val trimmed = text.trim()
+    if (!trimmed.startsWith('/')) return null
+    val commandText = trimmed.drop(1)
+    val name = commandText.substringBefore(' ').lowercase()
+    if (name.isBlank()) return null
+    return ParsedPromptSlashCommand(
+        name = name,
+        argument = commandText.substringAfter(' ', "").trim(),
+    ).takeIf { parsed -> PROMPT_SLASH_COMMANDS.any { it.name == parsed.name } }
+}
+
+private const val MAX_PROMPT_IMAGES = 4
+private const val MAX_PROMPT_IMAGE_BYTES = 8 * 1024 * 1024
+private const val MAX_PROMPT_SUGGESTIONS = 6
+private const val FILE_SEARCH_DEBOUNCE_MS = 180L
+
+@Composable
 private fun SearchDialog(
     state: AppUiState,
     onDismiss: () -> Unit,
-    onMessageSelected: (String) -> Unit,
+    onSearchThreads: (String, (List<ThreadSummary>, String?) -> Unit) -> Unit,
     onThreadSelected: (String) -> Unit,
 ) {
     var query by rememberSaveable { mutableStateOf("") }
-    val normalizedQuery = query.trim()
-    val messageResults by produceState(emptyList<UiMessage>(), normalizedQuery, state.messages) {
-        value = if (normalizedQuery.isBlank()) {
-            emptyList()
-        } else {
-            withContext(Dispatchers.Default) {
-                state.messages.asSequence()
-                    .filter { it.text.contains(normalizedQuery, ignoreCase = true) }
-                    .take(MAX_SEARCH_RESULTS)
-                    .toList()
+    var threadResults by remember { mutableStateOf<List<ThreadSummary>>(emptyList()) }
+    var loading by remember { mutableStateOf(false) }
+    var searchError by remember { mutableStateOf<String?>(null) }
+    var hasSearched by remember { mutableStateOf(false) }
+    var searchRequestGeneration by remember { mutableIntStateOf(0) }
+
+    fun submitSearch() {
+        val searchTerm = query.trim()
+        if (searchTerm.isBlank() || loading) return
+        val requestGeneration = ++searchRequestGeneration
+        loading = true
+        hasSearched = true
+        searchError = null
+        threadResults = emptyList()
+        onSearchThreads(searchTerm) { results, error ->
+            if (requestGeneration == searchRequestGeneration && query.trim() == searchTerm) {
+                threadResults = results
+                searchError = error
+                loading = false
             }
         }
     }
-    val threadResults = remember(normalizedQuery, state.threads) {
-        if (normalizedQuery.isBlank()) emptyList() else state.threads
-            .asSequence()
-            .filter {
-                it.title.contains(normalizedQuery, ignoreCase = true) ||
-                    it.cwd.contains(normalizedQuery, ignoreCase = true)
-            }
-            .take(MAX_SEARCH_RESULTS)
-            .toList()
-    }
+
     AlertDialog(
         modifier = Modifier.navigationBarsPadding(),
         onDismissRequest = onDismiss,
         icon = { Icon(Icons.Rounded.Search, contentDescription = null) },
-        title = { Text("搜索") },
+        title = { Text("搜索会话") },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
                 OutlinedTextField(
                     value = query,
-                    onValueChange = { query = it },
-                    label = { Text("查找消息或会话") },
+                    onValueChange = {
+                        searchRequestGeneration++
+                        query = it
+                        threadResults = emptyList()
+                        searchError = null
+                        hasSearched = false
+                        loading = false
+                    },
+                    label = { Text("会话名称") },
                     leadingIcon = { Icon(Icons.Rounded.Search, contentDescription = null) },
                     trailingIcon = {
                         if (query.isNotEmpty()) {
-                            IconButton(onClick = { query = "" }) {
+                            IconButton(onClick = {
+                                searchRequestGeneration++
+                                query = ""
+                                threadResults = emptyList()
+                                searchError = null
+                                hasSearched = false
+                                loading = false
+                            }) {
                                 Icon(Icons.Rounded.Close, contentDescription = "清空搜索")
                             }
                         }
                     },
                     singleLine = true,
                     modifier = Modifier.fillMaxWidth(),
+                    keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
+                    keyboardActions = KeyboardActions(onSearch = { submitSearch() }),
                 )
-                Text(
-                    "搜索当前已加载的消息和最近会话",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
+                AnimatedVisibility(visible = loading) {
+                    LinearProgressIndicator(Modifier.fillMaxWidth())
+                }
                 LazyColumn(
-                    modifier = Modifier.heightIn(max = 420.dp),
+                    modifier = Modifier.heightIn(min = 96.dp, max = 420.dp),
                     verticalArrangement = Arrangement.spacedBy(8.dp),
                 ) {
-                    if (normalizedQuery.isBlank()) {
-                        item { Text("输入关键词开始查找") }
-                    } else if (messageResults.isEmpty() && threadResults.isEmpty()) {
-                        item { Text("没有找到相关内容") }
-                    }
-                    if (messageResults.isNotEmpty()) {
-                        item {
+                    when {
+                        searchError != null -> item {
                             Text(
-                                "当前会话 · ${messageResults.size}",
-                                style = MaterialTheme.typography.labelLarge,
+                                searchError.orEmpty(),
+                                color = MaterialTheme.colorScheme.error,
+                                style = MaterialTheme.typography.bodyMedium,
+                                modifier = Modifier.padding(vertical = 12.dp),
                             )
                         }
-                        items(messageResults, key = { "message-${it.id}" }) { message ->
-                            SearchResultItem(
-                                title = messageKindLabel(message.kind),
-                                preview = message.text.searchPreview(normalizedQuery),
-                                onClick = { onMessageSelected(message.id) },
+
+                        !loading && hasSearched && threadResults.isEmpty() -> item {
+                            Text(
+                                "未找到会话",
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.padding(vertical = 12.dp),
+                            )
+                        }
+
+                        !loading && !hasSearched -> item {
+                            Text(
+                                "输入会话名称开始搜索",
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.padding(vertical = 12.dp),
                             )
                         }
                     }
-                    if (threadResults.isNotEmpty()) {
+                    if (!loading && threadResults.isNotEmpty()) {
                         item {
                             Text(
-                                "最近会话 · ${threadResults.size}",
+                                "搜索结果 · ${threadResults.size}",
                                 style = MaterialTheme.typography.labelLarge,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
                             )
                         }
                         items(threadResults, key = { "thread-${it.id}" }) { thread ->
@@ -1492,7 +2206,17 @@ private fun SearchDialog(
                 }
             }
         },
-        confirmButton = {},
+        confirmButton = {
+            Button(
+                onClick = { submitSearch() },
+                enabled = query.isNotBlank() && !loading &&
+                    state.connectionStatus == ConnectionStatus.CONNECTED,
+            ) {
+                Icon(Icons.Rounded.Search, contentDescription = null, modifier = Modifier.size(18.dp))
+                Spacer(Modifier.width(6.dp))
+                Text("搜索")
+            }
+        },
         dismissButton = { TextButton(onClick = onDismiss) { Text("关闭") } },
     )
 }
@@ -1508,58 +2232,51 @@ private fun SearchResultItem(
         modifier = Modifier
             .fillMaxWidth()
             .clickable(enabled = enabled, onClick = onClick),
-        color = MaterialTheme.colorScheme.surfaceContainerHighest,
-        shape = RoundedCornerShape(12.dp),
+        color = MaterialTheme.colorScheme.surfaceContainerLow,
+        shape = RoundedCornerShape(8.dp),
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
     ) {
-        Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-            Text(
-                title,
-                style = MaterialTheme.typography.labelLarge,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
+        Row(
+            modifier = Modifier.padding(12.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Icon(
+                Icons.Rounded.History,
+                contentDescription = null,
+                modifier = Modifier.size(20.dp),
+                tint = MaterialTheme.colorScheme.onSurfaceVariant,
             )
-            Text(
-                preview,
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                maxLines = 3,
-                overflow = TextOverflow.Ellipsis,
-            )
+            Spacer(Modifier.width(10.dp))
+            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                Text(
+                    title,
+                    style = MaterialTheme.typography.labelLarge,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                if (preview.isNotBlank()) {
+                    Text(
+                        preview,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
+            }
         }
     }
 }
-
-private fun messageKindLabel(kind: MessageKind): String = when (kind) {
-    MessageKind.USER -> "你的消息"
-    MessageKind.ASSISTANT -> "Codex 回复"
-    MessageKind.TOOL -> "执行输出"
-    MessageKind.INFO -> "提示"
-    MessageKind.ERROR -> "错误"
-}
-
-private fun String.searchPreview(query: String): String {
-    val index = indexOf(query, ignoreCase = true).coerceAtLeast(0)
-    val start = (index - 60).coerceAtLeast(0)
-    val end = (index + query.length + 140).coerceAtMost(length)
-    val compact = substring(start, end).replace(Regex("\\s+"), " ").trim()
-    return buildString {
-        if (start > 0) append("…")
-        append(compact)
-        if (end < length) append("…")
-    }
-}
-
-private const val MAX_SEARCH_RESULTS = 50
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun ConnectionSettingsDialog(
     state: AppUiState,
     onDismiss: () -> Unit,
-    onSave: (String, String, String, String, String, Set<String>) -> Unit,
-    onRefreshModels: () -> Unit,
-    onRefreshSkills: (String) -> Unit,
+    onSave: (String, String, String) -> Boolean,
     onReadDirectories: (String, (List<RemoteDirectory>, String?) -> Unit) -> Unit,
+    onRefreshMcp: () -> Unit,
+    onThemeSelected: (AppThemeMode) -> Unit,
 ) {
     val context = LocalContext.current
     var notificationGranted by remember {
@@ -1576,26 +2293,7 @@ private fun ConnectionSettingsDialog(
     var token by rememberSaveable { mutableStateOf(state.token) }
     var cwd by rememberSaveable { mutableStateOf(state.cwd) }
     var cwdError by remember { mutableStateOf<String?>(null) }
-    var model by rememberSaveable { mutableStateOf(state.model) }
-    var reasoningEffort by rememberSaveable { mutableStateOf(state.reasoningEffort) }
-    var selectedSkillPaths by rememberSaveable { mutableStateOf(state.selectedSkillPaths) }
-    var modelMenuExpanded by remember { mutableStateOf(false) }
-    var reasoningMenuExpanded by remember { mutableStateOf(false) }
-    var skillsMenuExpanded by remember { mutableStateOf(false) }
     var showDirectoryPicker by remember { mutableStateOf(false) }
-    val selectedModel = state.availableModels.firstOrNull { it.model == model }
-    val catalogDefaultModel = state.availableModels.firstOrNull { it.isDefault }
-    val configuredModel = state.availableModels.firstOrNull { it.model == state.configModel }
-    val effectiveDefaultModel = configuredModel ?: catalogDefaultModel
-    val reasoningModel = selectedModel ?: effectiveDefaultModel
-    val reasoningOptions = reasoningModel?.supportedReasoningEfforts.orEmpty()
-    val selectedReasoning = reasoningOptions.firstOrNull { it.value == reasoningEffort }
-    val configuredReasoningEffort = state.configReasoningEffort.takeIf { configuredEffort ->
-        configuredEffort.isNotBlank() &&
-            (reasoningOptions.isEmpty() || reasoningOptions.any { it.value == configuredEffort })
-    }
-    val effectiveDefaultReasoningEffort = configuredReasoningEffort
-        ?: reasoningModel?.defaultReasoningEffort.orEmpty()
     AlertDialog(
         modifier = Modifier.navigationBarsPadding(),
         onDismissRequest = onDismiss,
@@ -1649,329 +2347,50 @@ private fun ConnectionSettingsDialog(
                         Icon(Icons.Rounded.FolderOpen, contentDescription = "选择工作目录")
                     }
                 }
+                Text("主题", style = MaterialTheme.typography.labelLarge)
+                val themeOptions = listOf(
+                    AppThemeMode.SYSTEM to "跟随系统",
+                    AppThemeMode.LIGHT to "浅色",
+                    AppThemeMode.DARK to "深色",
+                )
+                SingleChoiceSegmentedButtonRow(Modifier.fillMaxWidth()) {
+                    themeOptions.forEachIndexed { index, (mode, label) ->
+                        SegmentedButton(
+                            selected = state.themeMode == mode,
+                            onClick = { onThemeSelected(mode) },
+                            shape = SegmentedButtonDefaults.itemShape(index, themeOptions.size),
+                            label = { Text(label, maxLines = 1) },
+                        )
+                    }
+                }
+                HorizontalDivider()
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
-                    ExposedDropdownMenuBox(
-                        expanded = modelMenuExpanded,
-                        onExpandedChange = {
-                            if (!state.modelsLoading && state.availableModels.isNotEmpty()) {
-                                modelMenuExpanded = !modelMenuExpanded
-                            }
-                        },
-                        modifier = Modifier.weight(1f),
-                    ) {
-                        OutlinedTextField(
-                            value = when {
-                                model.isBlank() && state.configModel.isNotBlank() ->
-                                    "Codex 配置 · ${configuredModel?.displayName ?: state.configModel}"
-
-                                model.isBlank() && catalogDefaultModel != null ->
-                                    "Codex 默认 · ${catalogDefaultModel.displayName}"
-
-                                model.isBlank() -> "默认模型"
-                                selectedModel != null -> selectedModel.displayName
-                                else -> model
-                            },
-                            onValueChange = {},
-                            readOnly = true,
-                            label = { Text("模型") },
-                            supportingText = {
-                                Text(
-                                    when {
-                                        state.modelsLoading -> "正在读取可用模型…"
-                                        state.modelsError != null -> state.modelsError
-                                        selectedModel != null && selectedModel.description.isNotBlank() ->
-                                            "${selectedModel.model} · ${selectedModel.description}"
-
-                                        model.isNotBlank() -> model
-                                        state.configModel.isNotBlank() ->
-                                            "${state.configModel} · 来自 Codex 有效配置"
-
-                                        else -> "使用 Codex 配置中的默认模型"
-                                    },
-                                    maxLines = 2,
-                                    overflow = TextOverflow.Ellipsis,
-                                )
-                            },
-                            trailingIcon = {
-                                if (state.modelsLoading) {
-                                    CircularProgressIndicator(
-                                        modifier = Modifier.size(20.dp),
-                                        strokeWidth = 2.dp,
-                                    )
-                                } else {
-                                    ExposedDropdownMenuDefaults.TrailingIcon(
-                                        expanded = modelMenuExpanded,
-                                    )
-                                }
-                            },
-                            singleLine = true,
-                            modifier = Modifier
-                                .menuAnchor(ExposedDropdownMenuAnchorType.PrimaryNotEditable)
-                                .fillMaxWidth(),
-                        )
-                        ExposedDropdownMenu(
-                            expanded = modelMenuExpanded,
-                            onDismissRequest = { modelMenuExpanded = false },
-                            modifier = Modifier.heightIn(max = 360.dp),
-                        ) {
-                            DropdownMenuItem(
-                                text = {
-                                    Column {
-                                        Text("使用 Codex 配置")
-                                        Text(
-                                            state.configModel.ifBlank {
-                                                catalogDefaultModel?.model ?: "由 App Server 决定"
-                                            },
-                                            style = MaterialTheme.typography.bodySmall,
-                                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                        )
-                                        configuredModel?.takeIf { it.description.isNotBlank() }?.let {
-                                            Text(
-                                                it.description,
-                                                style = MaterialTheme.typography.bodySmall,
-                                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                            )
-                                        }
-                                    }
-                                },
-                                onClick = {
-                                    model = ""
-                                    if (reasoningEffort !in effectiveDefaultModel
-                                            ?.supportedReasoningEfforts
-                                            .orEmpty()
-                                            .map { it.value }
-                                    ) {
-                                        reasoningEffort = ""
-                                    }
-                                    modelMenuExpanded = false
-                                },
-                            )
-                            state.availableModels.forEach { option ->
-                                DropdownMenuItem(
-                                    text = {
-                                        Column {
-                                            Text(option.displayName)
-                                            Text(
-                                                option.model,
-                                                style = MaterialTheme.typography.bodySmall.copy(
-                                                    fontFamily = FontFamily.Monospace,
-                                                ),
-                                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                            )
-                                        }
-                                    },
-                                    onClick = {
-                                        model = option.model
-                                        if (reasoningEffort !in option.supportedReasoningEfforts
-                                                .map { it.value }
-                                        ) {
-                                            reasoningEffort = ""
-                                        }
-                                        modelMenuExpanded = false
-                                    },
-                                )
-                            }
-                        }
-                    }
-                    Spacer(Modifier.width(6.dp))
+                    Text("MCP 服务", style = MaterialTheme.typography.labelLarge, modifier = Modifier.weight(1f))
                     IconButton(
-                        onClick = onRefreshModels,
-                        enabled = state.connectionStatus == ConnectionStatus.CONNECTED &&
-                            !state.modelsLoading,
+                        onClick = onRefreshMcp,
+                        enabled = state.connectionStatus == ConnectionStatus.CONNECTED && !state.mcpLoading,
                     ) {
-                        Icon(Icons.Rounded.Refresh, contentDescription = "刷新模型列表")
+                        Icon(Icons.Rounded.Refresh, contentDescription = "刷新 MCP 状态")
                     }
                 }
-                ExposedDropdownMenuBox(
-                    expanded = reasoningMenuExpanded,
-                    onExpandedChange = {
-                        if (reasoningOptions.isNotEmpty()) {
-                            reasoningMenuExpanded = !reasoningMenuExpanded
-                        }
-                    },
-                    modifier = Modifier.fillMaxWidth(),
-                ) {
-                    OutlinedTextField(
-                        value = when {
-                            reasoningEffort.isBlank() && reasoningModel != null ->
-                                "Codex 配置 · ${reasoningLabel(effectiveDefaultReasoningEffort)}"
-
-                            reasoningEffort.isBlank() -> "默认思考深度"
-                            else -> reasoningLabel(reasoningEffort)
-                        },
-                        onValueChange = {},
-                        readOnly = true,
-                        label = { Text("思考深度") },
-                        supportingText = {
-                            Text(
-                                selectedReasoning?.description ?: when {
-                                    configuredReasoningEffort != null -> "来自 Codex 有效配置"
-                                    reasoningModel != null -> "使用模型目录建议的默认思考深度"
-                                    else -> "由 App Server 根据 Codex 配置决定"
-                                },
-                                maxLines = 2,
-                                overflow = TextOverflow.Ellipsis,
-                            )
-                        },
-                        trailingIcon = {
-                            ExposedDropdownMenuDefaults.TrailingIcon(
-                                expanded = reasoningMenuExpanded,
-                            )
-                        },
-                        modifier = Modifier
-                            .menuAnchor(ExposedDropdownMenuAnchorType.PrimaryNotEditable)
-                            .fillMaxWidth(),
+                when {
+                    state.mcpLoading -> LinearProgressIndicator(Modifier.fillMaxWidth())
+                    state.mcpError != null -> Text(
+                        "读取 MCP 状态失败：${state.mcpError}",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.error,
                     )
-                    ExposedDropdownMenu(
-                        expanded = reasoningMenuExpanded,
-                        onDismissRequest = { reasoningMenuExpanded = false },
-                    ) {
-                        DropdownMenuItem(
-                            text = {
-                                Column {
-                                    Text("使用 Codex 配置")
-                                    if (effectiveDefaultReasoningEffort.isNotBlank()) {
-                                        Text(
-                                            reasoningLabel(effectiveDefaultReasoningEffort),
-                                            style = MaterialTheme.typography.bodySmall,
-                                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                        )
-                                    }
-                                }
-                            },
-                            onClick = {
-                                reasoningEffort = ""
-                                reasoningMenuExpanded = false
-                            },
-                        )
-                        reasoningOptions.forEach { option ->
-                            DropdownMenuItem(
-                                text = {
-                                    Column {
-                                        Text(reasoningLabel(option.value))
-                                        if (option.description.isNotBlank()) {
-                                            Text(
-                                                option.description,
-                                                style = MaterialTheme.typography.bodySmall,
-                                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                                maxLines = 2,
-                                                overflow = TextOverflow.Ellipsis,
-                                            )
-                                        }
-                                    }
-                                },
-                                onClick = {
-                                    reasoningEffort = option.value
-                                    reasoningMenuExpanded = false
-                                },
-                            )
-                        }
-                    }
-                }
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    ExposedDropdownMenuBox(
-                        expanded = skillsMenuExpanded,
-                        onExpandedChange = {
-                            if (!state.skillsLoading && state.availableSkills.isNotEmpty()) {
-                                skillsMenuExpanded = !skillsMenuExpanded
-                            }
-                        },
-                        modifier = Modifier.weight(1f),
-                    ) {
-                        OutlinedTextField(
-                            value = if (selectedSkillPaths.isEmpty()) {
-                                "未指定 Skills"
-                            } else {
-                                "已选择 ${selectedSkillPaths.size} 个 Skills"
-                            },
-                            onValueChange = {},
-                            readOnly = true,
-                            label = { Text("Skills") },
-                            supportingText = {
-                                Text(
-                                    when {
-                                        state.skillsLoading -> "正在扫描工作目录与用户 Skills…"
-                                        state.skillsError != null -> state.skillsError
-                                        state.skillsCwd != cwd -> "刷新以读取当前工作目录的 Skills"
-                                        else -> "所选 Skill 会作为任务输入发送给 Codex"
-                                    },
-                                    maxLines = 2,
-                                    overflow = TextOverflow.Ellipsis,
-                                )
-                            },
-                            trailingIcon = {
-                                if (state.skillsLoading) {
-                                    CircularProgressIndicator(
-                                        modifier = Modifier.size(20.dp),
-                                        strokeWidth = 2.dp,
-                                    )
-                                } else {
-                                    ExposedDropdownMenuDefaults.TrailingIcon(
-                                        expanded = skillsMenuExpanded,
-                                    )
-                                }
-                            },
-                            modifier = Modifier
-                                .menuAnchor(ExposedDropdownMenuAnchorType.PrimaryNotEditable)
-                                .fillMaxWidth(),
-                        )
-                        ExposedDropdownMenu(
-                            expanded = skillsMenuExpanded,
-                            onDismissRequest = { skillsMenuExpanded = false },
-                            modifier = Modifier.heightIn(max = 360.dp),
-                        ) {
-                            if (selectedSkillPaths.isNotEmpty()) {
-                                DropdownMenuItem(
-                                    text = { Text("清除全部选择") },
-                                    onClick = { selectedSkillPaths = emptySet() },
-                                )
-                            }
-                            state.availableSkills.forEach { skill ->
-                                DropdownMenuItem(
-                                    leadingIcon = {
-                                        Checkbox(
-                                            checked = skill.path in selectedSkillPaths,
-                                            onCheckedChange = null,
-                                        )
-                                    },
-                                    text = {
-                                        Column {
-                                            Text(skill.displayName)
-                                            Text(
-                                                listOf(skill.scope, skill.description)
-                                                    .filter { it.isNotBlank() }
-                                                    .joinToString(" · "),
-                                                style = MaterialTheme.typography.bodySmall,
-                                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                                maxLines = 2,
-                                                overflow = TextOverflow.Ellipsis,
-                                            )
-                                        }
-                                    },
-                                    onClick = {
-                                        selectedSkillPaths = if (skill.path in selectedSkillPaths) {
-                                            selectedSkillPaths - skill.path
-                                        } else {
-                                            selectedSkillPaths + skill.path
-                                        }
-                                    },
-                                )
-                            }
-                        }
-                    }
-                    Spacer(Modifier.width(6.dp))
-                    IconButton(
-                        onClick = { onRefreshSkills(cwd) },
-                        enabled = state.connectionStatus == ConnectionStatus.CONNECTED &&
-                            cwd.isNotBlank() && !state.skillsLoading,
-                    ) {
-                        Icon(Icons.Rounded.Refresh, contentDescription = "刷新 Skills")
+                    state.mcpServers.isEmpty() -> Text(
+                        "未配置或未发现 MCP 服务",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    else -> state.mcpServers.forEachIndexed { index, server ->
+                        McpStatusRow(server)
+                        if (index < state.mcpServers.lastIndex) HorizontalDivider()
                     }
                 }
                 if (!notificationGranted && Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
@@ -1991,14 +2410,11 @@ private fun ConnectionSettingsDialog(
         confirmButton = {
             Button(
                 onClick = {
-                    onSave(
-                        endpoint,
-                        token,
-                        cwd,
-                        model,
-                        reasoningEffort,
-                        selectedSkillPaths,
-                    )
+                    if (!isValidWorkspacePath(cwd)) {
+                        cwdError = "请输入真实的绝对目录路径"
+                    } else {
+                        onSave(endpoint, token, cwd)
+                    }
                 },
                 enabled = endpoint.isNotBlank() && cwd.isNotBlank() && !state.busy,
             ) {
@@ -2017,10 +2433,71 @@ private fun ConnectionSettingsDialog(
                 cwd = selectedPath
                 cwdError = null
                 showDirectoryPicker = false
-                onRefreshSkills(selectedPath)
             },
         )
     }
+}
+
+@Composable
+private fun McpStatusRow(server: McpServerStatus) {
+    val statusColor = when (server.startupStatus) {
+        "ready" -> Color(0xFF2DA44E)
+        "starting" -> MaterialTheme.colorScheme.primary
+        "failed", "cancelled" -> MaterialTheme.colorScheme.error
+        else -> MaterialTheme.colorScheme.onSurfaceVariant
+    }
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 6.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Box(
+            modifier = Modifier
+                .size(9.dp)
+                .clip(CircleShape)
+                .background(statusColor),
+        )
+        Spacer(Modifier.width(10.dp))
+        Column(Modifier.weight(1f)) {
+            Text(server.displayName, style = MaterialTheme.typography.bodyMedium)
+            Text(
+                buildList {
+                    server.startupStatus?.let { add(mcpStartupLabel(it)) }
+                    add(mcpAuthLabel(server.authStatus))
+                    add("${server.toolCount} 个工具")
+                    if (server.resourceCount > 0) add("${server.resourceCount} 个资源")
+                }.joinToString(" · "),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            server.error?.takeIf { it.isNotBlank() }?.let { error ->
+                Text(
+                    error,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.error,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+        }
+    }
+}
+
+private fun mcpStartupLabel(status: String): String = when (status) {
+    "starting" -> "正在启动"
+    "ready" -> "已就绪"
+    "failed" -> "启动失败"
+    "cancelled" -> "已取消"
+    else -> "状态未知"
+}
+
+private fun mcpAuthLabel(status: String): String = when (status) {
+    "notLoggedIn" -> "未登录"
+    "bearerToken" -> "令牌认证"
+    "oAuth" -> "OAuth"
+    "unsupported" -> "无需 OAuth"
+    else -> "认证状态未知"
 }
 
 @Composable
@@ -2123,16 +2600,8 @@ private fun RemoteDirectoryPickerDialog(
     )
 }
 
-private fun reasoningLabel(value: String): String = when (value) {
-    "none" -> "无"
-    "minimal" -> "最少"
-    "low" -> "低"
-    "medium" -> "中"
-    "high" -> "高"
-    "xhigh" -> "极高"
-    "max" -> "最高"
-    "ultra" -> "Ultra（自动委派）"
-    else -> value.ifBlank { "默认" }
+private fun reasoningLabel(value: String): String = value.replaceFirstChar { character ->
+    if (character.isLowerCase()) character.titlecase() else character.toString()
 }
 
 @Composable

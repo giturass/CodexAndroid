@@ -8,6 +8,8 @@ import com.google.gson.JsonObject
 
 enum class ConnectionStatus { DISCONNECTED, CONNECTING, CONNECTED }
 
+enum class AppThemeMode { SYSTEM, LIGHT, DARK }
+
 const val DEFAULT_TERMUX_HOME = "/data/data/com.termux/files/home"
 
 enum class MessageKind { USER, ASSISTANT, TOOL, INFO, ERROR }
@@ -39,8 +41,10 @@ data class CodexModel(
     val displayName: String,
     val description: String,
     val isDefault: Boolean,
+    val hidden: Boolean = false,
     val defaultReasoningEffort: String,
     val supportedReasoningEfforts: List<ReasoningEffortOption>,
+    val inputModalities: List<String>,
 )
 
 data class ReasoningEffortOption(
@@ -56,6 +60,36 @@ data class CodexSkill(
     val path: String,
     val description: String,
     val scope: String,
+)
+
+@Immutable
+data class PromptFileReference(
+    val name: String,
+    val path: String,
+)
+
+@Immutable
+data class PromptImageAttachment(
+    val name: String,
+    val dataUrl: String,
+)
+
+@Immutable
+data class PromptInput(
+    val text: String,
+    val files: List<PromptFileReference> = emptyList(),
+    val skills: List<CodexSkill> = emptyList(),
+    val images: List<PromptImageAttachment> = emptyList(),
+)
+
+data class McpServerStatus(
+    val name: String,
+    val displayName: String,
+    val startupStatus: String? = null,
+    val authStatus: String = "unsupported",
+    val toolCount: Int = 0,
+    val resourceCount: Int = 0,
+    val error: String? = null,
 )
 
 enum class PendingKind { COMMAND, FILE_CHANGE, PERMISSION, USER_INPUT, MCP_ELICITATION }
@@ -93,6 +127,8 @@ data class AppUiState(
     val endpoint: String = "ws://127.0.0.1:4500",
     val token: String = "",
     val cwd: String = DEFAULT_TERMUX_HOME,
+    val workspaceConfigured: Boolean = false,
+    val themeMode: AppThemeMode = AppThemeMode.SYSTEM,
     val model: String = "",
     val reasoningEffort: String = "",
     val configModel: String = "",
@@ -105,6 +141,9 @@ data class AppUiState(
     val skillsCwd: String = "",
     val skillsLoading: Boolean = false,
     val skillsError: String? = null,
+    val mcpServers: List<McpServerStatus> = emptyList(),
+    val mcpLoading: Boolean = false,
+    val mcpError: String? = null,
     val messages: List<UiMessage> = emptyList(),
     val threads: List<ThreadSummary> = emptyList(),
     val currentThreadId: String? = null,
@@ -124,4 +163,5 @@ data class AppUiState(
         get() = pendingActions.firstOrNull {
             it.threadId != null && it.threadId != currentThreadId
         }
+
 }

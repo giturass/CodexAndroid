@@ -24,7 +24,7 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
         setContent {
-            TermuxCodexTheme {
+            TermuxCodexTheme(themeMode = codexViewModel.uiState.themeMode) {
                 CodexApp(codexViewModel)
             }
         }
